@@ -1,0 +1,7 @@
+project_id = "umayieigsqcbxgaqwssu"
+
+[functions.create-razorpay-order]
+verify_jwt = false
+
+[functions.send-push-notification]
+verify_jwt = false

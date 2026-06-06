@@ -1,0 +1,1 @@
+GRANT EXECUTE ON FUNCTION public.verify_master_admin(text, text) TO anon, authenticated;
