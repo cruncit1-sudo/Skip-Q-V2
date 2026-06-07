@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import SellerHeader from "@/components/seller/SellerHeader";
-import { getOrders, loadOrdersFromBackend, subscribeOrders, type Order } from "@/lib/sellerOrders";
-import { hourlySales, ordersInRange, rangeBounds, totalRevenue } from "@/lib/sellerStats";
+import { rangeBounds } from "@/lib/sellerStats";
 import { getSellerSession } from "@/utils/sessionManager";
+import { collection, query, where, Timestamp, onSnapshot } from "firebase/firestore";
+import { db } from "@/firebase";
 import {
   Area,
   AreaChart,
@@ -33,27 +34,57 @@ const SellerDashboard = () => {
   const navigate = useNavigate();
   const lastChartTap = useRef(0);
 
-  const [orders, setOrders] = useState<Order[]>(() => getOrders());
+  const [salesStats, setSalesStats] = useState({
+    revenue: 0,
+    count: 0,
+    chartData: Array.from({ length: 12 }, (_, i) => ({
+      time: ["12 AM", "02 AM", "04 AM", "06 AM", "08 AM", "10 AM", "12 PM", "02 PM", "04 PM", "06 PM", "08 PM", "10 PM"][i],
+      value: 0
+    }))
+  });
+
   useEffect(() => {
     const sellerId = getSellerSession()?.id;
-    const unsub = subscribeOrders(() => setOrders(getOrders()));
-    // Fast path: only fetch today's orders for the dashboard card.
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    loadOrdersFromBackend(sellerId, undefined, {
-      sinceMs: startOfToday.getTime(),
-      limit: 100,
-      merge: true,
-    })
-      .then(setOrders)
-      .catch(() => {});
-    return unsub;
-  }, []);
+    if (!sellerId) return;
 
-  const { from, to } = useMemo(() => rangeBounds("today"), []);
-  const todaysOrders = useMemo(() => ordersInRange(orders, from, to), [orders, from, to]);
-  const todaysRevenue = useMemo(() => totalRevenue(todaysOrders), [todaysOrders]);
-  const salesData = useMemo(() => hourlySales(todaysOrders), [todaysOrders]);
+    const { from, to } = rangeBounds("today");
+    const salesRef = collection(db, "sellers", sellerId, "sales");
+    const q = query(
+      salesRef,
+      where("timestamp", ">=", Timestamp.fromMillis(from)),
+      where("timestamp", "<=", Timestamp.fromMillis(to))
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      let revenue = 0;
+      let count = 0;
+      const buckets: number[] = Array.from({ length: 12 }, () => 0);
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        revenue += data.totalAmount || 0;
+        count += 1;
+
+        if (data.timestamp) {
+          const d = data.timestamp.toDate ? data.timestamp.toDate() : new Date(data.timestamp);
+          const h = d.getHours();
+          const idx = Math.min(11, Math.max(0, Math.floor(h / 2)));
+          buckets[idx] += data.totalAmount || 0;
+        }
+      });
+
+      const labels = [
+        "12 AM", "02 AM", "04 AM", "06 AM",
+        "08 AM", "10 AM", "12 PM", "02 PM",
+        "04 PM", "06 PM", "08 PM", "10 PM",
+      ];
+      
+      const chartData = buckets.map((value, i) => ({ time: labels[i], value }));
+      setSalesStats({ revenue, count, chartData });
+    });
+
+    return () => unsub();
+  }, []);
 
   const handleChartTap = () => {
     const now = Date.now();
@@ -140,13 +171,13 @@ const SellerDashboard = () => {
           </p>
           <div className="mt-2 flex items-end justify-between gap-3">
             <p className="text-4xl font-extrabold tracking-tight">
-              ₹{todaysRevenue.toLocaleString("en-IN")}
+              ₹{salesStats.revenue.toLocaleString("en-IN")}
             </p>
             <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2.5 py-1 text-xs font-semibold text-primary">
               <span className="material-symbols-outlined" style={{ fontSize: 14 }}>
                 receipt_long
               </span>
-              {todaysOrders.length} orders
+              {salesStats.count} orders
             </span>
           </div>
 
@@ -159,7 +190,7 @@ const SellerDashboard = () => {
             title="Double-tap to open Sales Dashboard"
           >
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={salesData} margin={{ top: 10, right: 0, left: 0, bottom: 0 }}>
+              <AreaChart data={salesStats.chartData} margin={{ top: 10, right: 0, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="salesFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.45} />

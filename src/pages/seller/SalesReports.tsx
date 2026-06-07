@@ -5,9 +5,9 @@ import { Calendar as CalendarIcon } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { getOrders, loadOrdersFromBackend, subscribeOrders, type Order } from "@/lib/sellerOrders";
-import { ordersInRange, summariseByCategory, totalRevenue } from "@/lib/sellerStats";
 import { getSellerSession } from "@/utils/sessionManager";
+import { collection, query, where, Timestamp, onSnapshot } from "firebase/firestore";
+import { db } from "@/firebase";
 
 const CATEGORY_ICON: Record<string, string> = {
   Food: "restaurant",
@@ -33,21 +33,63 @@ const SalesReports = () => {
     return d;
   });
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [orders, setOrders] = useState<Order[]>(() => getOrders());
+  const [reportStats, setReportStats] = useState({
+    totalSales: 0,
+    totalOrders: 0,
+    categories: [] as { category: string; totalSold: number; revenue: number; items: { name: string; sold: number }[] }[]
+  });
 
   useEffect(() => {
     const sellerId = getSellerSession()?.id;
-    const unsub = subscribeOrders(() => setOrders(getOrders()));
-    loadOrdersFromBackend(sellerId).then(setOrders).catch(() => setOrders([]));
-    return unsub;
-  }, []);
+    if (!sellerId) return;
 
-  const ranged = useMemo(
-    () => ordersInRange(orders, startDate.getTime(), endDate.getTime()),
-    [orders, startDate, endDate],
-  );
-  const totalSales = useMemo(() => totalRevenue(ranged), [ranged]);
-  const totalOrders = ranged.length;
+    const from = startDate.getTime();
+    const to = endDate.getTime();
+    const salesRef = collection(db, "sellers", sellerId, "sales");
+    const q = query(
+      salesRef,
+      where("timestamp", ">=", Timestamp.fromMillis(from)),
+      where("timestamp", "<=", Timestamp.fromMillis(to))
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      let totalSales = 0;
+      let totalOrders = 0;
+      const cats = new Map<string, { totalSold: number; revenue: number; items: Map<string, { name: string; sold: number }> }>();
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        totalSales += data.totalAmount || 0;
+        totalOrders += 1;
+
+        if (data.items && Array.isArray(data.items)) {
+          data.items.forEach((item: any) => {
+            const catName = item.category || "Other";
+            if (!cats.has(catName)) cats.set(catName, { totalSold: 0, revenue: 0, items: new Map() });
+            const c = cats.get(catName)!;
+            c.totalSold += item.qty;
+            c.revenue += (item.qty * item.price);
+
+            if (!c.items.has(item.itemId)) c.items.set(item.itemId, { name: item.name, sold: 0 });
+            c.items.get(item.itemId)!.sold += item.qty;
+          });
+        }
+      });
+
+      const categories = Array.from(cats.entries()).map(([category, v]) => ({
+        category,
+        totalSold: v.totalSold,
+        revenue: v.revenue,
+        items: Array.from(v.items.values()).sort((a, b) => b.sold - a.sold),
+      })).sort((a, b) => b.revenue - a.revenue);
+
+      setReportStats({ totalSales, totalOrders, categories });
+    });
+
+    return () => unsub();
+  }, [startDate, endDate]);
+
+  const { totalSales, totalOrders, categories } = reportStats;
   const avgPerDay = useMemo(() => {
     const days = Math.max(
       1,
@@ -55,7 +97,6 @@ const SalesReports = () => {
     );
     return Math.round(totalSales / days);
   }, [totalSales, startDate, endDate]);
-  const categories = useMemo(() => summariseByCategory(ranged), [ranged]);
   const effectiveOpenKey = openKey ?? categories[0]?.category ?? null;
 
   return (

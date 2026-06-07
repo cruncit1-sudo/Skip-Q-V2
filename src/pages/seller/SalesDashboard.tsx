@@ -1,14 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getOrders, loadOrdersFromBackend, subscribeOrders, type Order } from "@/lib/sellerOrders";
-import {
-  ordersInRange,
-  rangeBounds,
-  summariseByCategory,
-  totalRevenue,
-  type RangeKey,
-} from "@/lib/sellerStats";
+import { rangeBounds, type RangeKey } from "@/lib/sellerStats";
 import { getSellerSession } from "@/utils/sessionManager";
+import { collection, query, where, Timestamp, onSnapshot } from "firebase/firestore";
+import { db } from "@/firebase";
 
 const CATEGORY_EMOJI: Record<string, string> = {
   Food: "🍛",
@@ -20,19 +15,83 @@ const SalesDashboard = () => {
   const navigate = useNavigate();
   const [range, setRange] = useState<RangeKey>("today");
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [orders, setOrders] = useState<Order[]>(() => getOrders());
+  const [stats, setStats] = useState({
+    revenue: 0,
+    totalOrders: 0,
+    categories: [] as { category: string; totalSold: number; items: { name: string; sold: number }[] }[],
+    peakHour: "—",
+    topItem: "—"
+  });
 
   useEffect(() => {
     const sellerId = getSellerSession()?.id;
-    const unsub = subscribeOrders(() => setOrders(getOrders()));
-    loadOrdersFromBackend(sellerId).then(setOrders).catch(() => setOrders([]));
-    return unsub;
-  }, []);
+    if (!sellerId) return;
 
-  const { from, to } = useMemo(() => rangeBounds(range), [range]);
-  const ranged = useMemo(() => ordersInRange(orders, from, to), [orders, from, to]);
-  const revenue = useMemo(() => totalRevenue(ranged), [ranged]);
-  const categories = useMemo(() => summariseByCategory(ranged), [ranged]);
+    const { from, to } = rangeBounds(range);
+    const salesRef = collection(db, "sellers", sellerId, "sales");
+    const q = query(
+      salesRef,
+      where("timestamp", ">=", Timestamp.fromMillis(from)),
+      where("timestamp", "<=", Timestamp.fromMillis(to))
+    );
+
+    const unsub = onSnapshot(q, (snapshot) => {
+      let revenue = 0;
+      let totalOrders = 0;
+      const cats = new Map<string, { totalSold: number; items: Map<string, { name: string; sold: number }> }>();
+      const hours = new Array(24).fill(0);
+      const itemMap = new Map<string, { name: string; qty: number }>();
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        revenue += data.totalAmount || 0;
+        totalOrders += 1;
+
+        if (data.timestamp) {
+          const d = data.timestamp.toDate ? data.timestamp.toDate() : new Date(data.timestamp);
+          hours[d.getHours()] += data.totalAmount || 0;
+        }
+
+        if (data.items && Array.isArray(data.items)) {
+          data.items.forEach((item: any) => {
+            const catName = item.category || "Other";
+            if (!cats.has(catName)) cats.set(catName, { totalSold: 0, items: new Map() });
+            const c = cats.get(catName)!;
+            c.totalSold += item.qty;
+
+            if (!c.items.has(item.itemId)) c.items.set(item.itemId, { name: item.name, sold: 0 });
+            c.items.get(item.itemId)!.sold += item.qty;
+
+            if (!itemMap.has(item.itemId)) itemMap.set(item.itemId, { name: item.name, qty: 0 });
+            itemMap.get(item.itemId)!.qty += item.qty;
+          });
+        }
+      });
+
+      const categories = Array.from(cats.entries()).map(([category, v]) => ({
+        category,
+        totalSold: v.totalSold,
+        items: Array.from(v.items.values()).sort((a, b) => b.sold - a.sold),
+      })).sort((a, b) => b.totalSold - a.totalSold);
+
+      let bestHour = 0;
+      let bestVal = 0;
+      hours.forEach((v, i) => { if (v > bestVal) { bestVal = v; bestHour = i; } });
+      const peakHour = bestVal === 0 ? "—" : `${bestHour % 12 === 0 ? 12 : bestHour % 12}:00 ${bestHour < 12 ? "AM" : "PM"}`;
+
+      let topItem = "—";
+      let topQty = 0;
+      itemMap.forEach((v) => { if (v.qty > topQty) { topQty = v.qty; topItem = v.name; } });
+
+      setStats({ revenue, totalOrders, categories, peakHour, topItem });
+    }, (err) => {
+      console.error("Sales real-time error:", err);
+    });
+
+    return () => unsub();
+  }, [range]);
+
+  const { revenue, categories, peakHour, topItem } = stats;
   const totalCats = categories.length;
   // Default-open the first category for visual consistency.
   const effectiveOpenKey = openKey ?? categories[0]?.category ?? null;
@@ -189,7 +248,7 @@ const SalesDashboard = () => {
               PEAK HOUR
             </p>
             <p className="mt-1 text-xl font-extrabold tracking-tight">
-              {peakHourLabelLocal(ranged)}
+              {peakHour}
             </p>
           </div>
           <div className="rounded-2xl border border-border bg-gradient-card p-4 shadow-card">
@@ -202,7 +261,7 @@ const SalesDashboard = () => {
               TOP ITEM
             </p>
             <p className="mt-1 truncate text-xl font-extrabold tracking-tight">
-              {topItemLocal(ranged)}
+              {topItem}
             </p>
           </div>
         </section>
@@ -212,28 +271,3 @@ const SalesDashboard = () => {
 };
 
 export default SalesDashboard;
-
-function peakHourLabelLocal(orders: Order[]): string {
-  if (orders.length === 0) return "—";
-  const hours = new Array(24).fill(0);
-  for (const o of orders) hours[new Date(o.createdAt).getHours()] += o.total;
-  let best = 0;
-  let bestVal = 0;
-  hours.forEach((v, i) => { if (v > bestVal) { bestVal = v; best = i; } });
-  if (bestVal === 0) return "—";
-  const h12 = best % 12 === 0 ? 12 : best % 12;
-  return `${h12}:00 ${best < 12 ? "AM" : "PM"}`;
-}
-
-function topItemLocal(orders: Order[]): string {
-  if (orders.length === 0) return "—";
-  const map = new Map<string, { name: string; qty: number }>();
-  for (const o of orders) for (const it of o.items) {
-    const cur = map.get(it.itemId) ?? { name: it.name, qty: 0 };
-    cur.qty += it.qty;
-    map.set(it.itemId, cur);
-  }
-  let best: { name: string; qty: number } | null = null;
-  map.forEach((v) => { if (!best || v.qty > best.qty) best = v; });
-  return best ? best.name : "—";
-}
