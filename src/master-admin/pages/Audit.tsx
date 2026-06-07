@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Shell from "../components/Shell";
-import { supabase } from "@/integrations/supabase/client";
 import { getSession } from "../auth";
+import { firestoreDb } from "../db";
+import { collection, getDocs, limit, query } from "firebase/firestore";
 
 type Row = { id: string; action_type: string; target: string | null; details: Record<string, unknown> | null; ip_address: string | null; created_at: string };
 
@@ -14,10 +15,33 @@ export default function Audit() {
   useEffect(() => { (async () => {
     const s = getSession();
     if (!s?.username) return;
-    const { data } = await supabase.functions.invoke("admin-audit-log", {
-      body: { username: s.username, op: "list" },
-    });
-    setRows(((data as { rows?: Row[] })?.rows) ?? []);
+    try {
+      // Try fetching from different possible collection names automatically
+      let snap = await getDocs(query(collection(firestoreDb, "admin_audit_logs"), limit(1000)));
+      if (snap.empty) snap = await getDocs(query(collection(firestoreDb, "audit_logs"), limit(1000)));
+      if (snap.empty) snap = await getDocs(query(collection(firestoreDb, "audit_log"), limit(1000)));
+
+      const data = snap.docs.map((d) => {
+        const item = d.data();
+        
+        // Handle multiple date field variations safely
+        const rawDate = item.timestamp || item.created_at || item.createdAt;
+        let ts = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate || Date.now());
+        if (isNaN(ts.getTime())) ts = new Date(); // fallback if date is invalid
+        
+        return {
+          id: d.id,
+          action_type: item.action_type || item.action || item.type || item.eventName || "UNKNOWN",
+          target: item.target || item.userId || item.uid || null,
+          details: item.details || item.data || item.payload || null,
+          ip_address: item.ip_address || item.ipAddress || item.ip || null,
+          created_at: ts.toISOString(),
+        } as Row;
+      });
+      setRows(data.sort((a, b) => b.created_at.localeCompare(a.created_at)));
+    } catch (e) {
+      console.error("Error fetching audit logs:", e);
+    }
   })(); }, []);
 
   const filtered = useMemo(() => rows.filter((r) => {

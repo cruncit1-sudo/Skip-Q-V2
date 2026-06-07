@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, CartesianGrid, Tooltip, XAxis, YAxis, Legend } from "recharts";
 import Shell from "../components/Shell";
-import { db } from "../db";
 import { CHART_COLORS, axisStyle, daysAgoISO, inr, todayISO, tooltipStyle } from "../format";
+import { collection, getDocs, query, where, Timestamp } from "firebase/firestore";
+import { firestoreDb as db } from "../db";
 
 type Range = "today" | "week" | "month" | "custom";
 type Sale = { seller_id: string; date: string; total_orders: number; total_revenue: number };
@@ -25,15 +26,89 @@ export default function Sales() {
   }, [range]);
 
   useEffect(() => {
+    let active = true;
     (async () => {
-      const [{ data: sl }, { data: ss }, { data: pp }, { data: sp }] = await Promise.all([
-        db.from("sellers").select("id, canteen_name"),
-        db.from("seller_sales").select("seller_id, date, total_orders, total_revenue").gte("date", from).lte("date", to),
-        db.from("seller_products").select("seller_id, product_name, total_sold"),
-        db.from("user_spend").select("payment_method, amount, created_at").gte("created_at", from).lte("created_at", to + "T23:59:59"),
-      ]);
-      setSellers(sl ?? []); setSales(ss ?? []); setProducts(pp ?? []); setSpends(sp ?? []);
+      try {
+        const fromMillis = new Date(from).getTime();
+        const toMillis = new Date(to + "T23:59:59").getTime();
+
+        // Fetch all sellers
+        const sellersSnap = await getDocs(collection(db, "sellers"));
+        const fetchedSellers = sellersSnap.docs.map((d) => ({
+          id: d.id,
+          canteen_name: d.data().canteenName || d.data().canteen_name || "Unknown Canteen",
+        }));
+
+        const fetchedSales: Sale[] = [];
+        const fetchedProducts: Product[] = [];
+        const fetchedSpends: Spend[] = [];
+
+        const productAgg = new Map<string, number>();
+        const salesAgg = new Map<string, { orders: number; revenue: number }>();
+
+        // Fetch sales for all sellers concurrently
+        await Promise.all(
+          fetchedSellers.map(async (seller) => {
+            const salesQ = query(
+              collection(db, "sellers", seller.id, "sales"),
+              where("timestamp", ">=", Timestamp.fromMillis(fromMillis)),
+              where("timestamp", "<=", Timestamp.fromMillis(toMillis))
+            );
+            
+            const snap = await getDocs(salesQ);
+            snap.forEach((doc) => {
+              const data = doc.data();
+              const ts = data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp);
+              const dateStr = ts.toISOString().split("T")[0]; // "YYYY-MM-DD"
+
+              // Track payments for the pie chart
+              fetchedSpends.push({
+                payment_method: data.payment === "Cash" ? "Cash" : "UPI",
+                amount: data.totalAmount || 0,
+                created_at: ts.toISOString(),
+              });
+
+              // Aggregate sales for line charts and tables
+              const sKey = `${seller.id}|${dateStr}`;
+              if (!salesAgg.has(sKey)) salesAgg.set(sKey, { orders: 0, revenue: 0 });
+              const sCur = salesAgg.get(sKey)!;
+              sCur.orders += 1;
+              sCur.revenue += data.totalAmount || 0;
+
+              // Aggregate top products
+              if (data.items && Array.isArray(data.items)) {
+                data.items.forEach((item: any) => {
+                  const pKey = `${seller.id}|${item.name || "Unknown"}`;
+                  productAgg.set(pKey, (productAgg.get(pKey) || 0) + (item.qty || 1));
+                });
+              }
+            });
+          })
+        );
+
+        // Convert mapped aggregations back to the arrays expected by the UI
+        salesAgg.forEach((val, key) => {
+          const [seller_id, date] = key.split("|");
+          fetchedSales.push({ seller_id, date, total_orders: val.orders, total_revenue: val.revenue });
+        });
+
+        productAgg.forEach((val, key) => {
+          const [seller_id, product_name] = key.split("|");
+          fetchedProducts.push({ seller_id, product_name, total_sold: val });
+        });
+
+        if (active) {
+          setSellers(fetchedSellers);
+          setSales(fetchedSales);
+          setProducts(fetchedProducts);
+          setSpends(fetchedSpends);
+        }
+      } catch (e) {
+        console.error("Error fetching Master Admin sales data:", e);
+      }
     })();
+    
+    return () => { active = false; };
   }, [from, to]);
 
   const totalGmv = sales.reduce((a,r) => a + Number(r.total_revenue), 0);

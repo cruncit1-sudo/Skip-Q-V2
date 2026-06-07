@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Shell from "../components/Shell";
-import { db } from "../db";
 import { axisStyle, daysAgoISO, inr, tooltipStyle } from "../format";
+import { firestoreDb } from "../db";
+import { collection, getDocs, query, where } from "firebase/firestore";
 
 type Spend = { order_id: string | null; seller_id: string | null; amount: number; payment_method: string | null; product_names: string[] | null; created_at: string };
 type Analytics = { screen_name: string; dwell_seconds: number; session_id: string | null; created_at: string };
@@ -18,14 +19,41 @@ export default function UserDetail() {
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const [{ data: sp }, { data: an }, { data: sl }] = await Promise.all([
-        db.from("user_spend").select("order_id, seller_id, amount, payment_method, product_names, created_at").eq("user_id", id),
-        db.from("user_analytics").select("screen_name, dwell_seconds, session_id, created_at").eq("user_id", id).gte("created_at", daysAgoISO(30)),
-        db.from("sellers").select("id, canteen_name"),
+      const [sellersSnap, anSnap] = await Promise.all([
+        getDocs(collection(firestoreDb, "sellers")),
+        getDocs(query(
+          collection(firestoreDb, "user_analytics"),
+          where("user_id", "==", id),
+          where("created_at", ">=", daysAgoISO(30))
+        ))
       ]);
-      setSpends(sp ?? []);
-      setAnalytics(an ?? []);
-      setSellers(Object.fromEntries((sl ?? []).map((s: { id: string; canteen_name: string }) => [s.id, s.canteen_name])));
+
+      const slData: Record<string, string> = {};
+      const fetchedSpends: Spend[] = [];
+
+      await Promise.all(sellersSnap.docs.map(async (s) => {
+        slData[s.id] = s.data().canteenName || s.data().canteen_name || "Unknown";
+        const salesSnap = await getDocs(query(
+          collection(firestoreDb, "sellers", s.id, "sales"),
+          where("uid", "==", id)
+        ));
+        salesSnap.forEach(doc => {
+           const data = doc.data();
+           const ts = data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp || Date.now());
+           fetchedSpends.push({
+             order_id: data.orderId || doc.id,
+             seller_id: s.id,
+             amount: data.totalAmount || 0,
+             payment_method: data.payment === "Cash" ? "Cash" : "UPI",
+             product_names: data.items && Array.isArray(data.items) ? data.items.map((i:any) => i.name) : [],
+             created_at: ts.toISOString(),
+           });
+        });
+      }));
+
+      setSpends(fetchedSpends.sort((a,b) => b.created_at.localeCompare(a.created_at)));
+      setAnalytics(anSnap.docs.map(d => d.data() as Analytics));
+      setSellers(slData);
     })();
   }, [id]);
 
@@ -56,7 +84,7 @@ export default function UserDetail() {
   const mostVisited = [...screens.entries()].sort((a,b) => b[1] - a[1])[0];
 
   const totalSpend = spends.reduce((a,s) => a + Number(s.amount), 0);
-  const days = Math.max(1, Math.ceil((Date.now() - new Date(spends.at(-1)?.created_at ?? Date.now()).getTime()) / (86400000)));
+  const days = Math.max(1, Math.ceil((Date.now() - new Date(spends.length > 0 ? spends[spends.length - 1].created_at : Date.now()).getTime()) / (86400000)));
   const months = Math.max(1, days / 30);
 
   return (

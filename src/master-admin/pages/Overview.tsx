@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import Shell from "../components/Shell";
 import { firestoreDb } from "../db";
-import { collection, getDocs, query, where, deleteDoc } from "firebase/firestore";
+import { collection, getDocs, query, where, deleteDoc, Timestamp } from "firebase/firestore";
 import { CHART_COLORS, axisStyle, daysAgoISO, inr, todayISO, tooltipStyle } from "../format";
 import { toast } from "sonner";
 
@@ -19,18 +19,68 @@ export default function Overview() {
   const [activeUsersToday, setActiveUsersToday] = useState(0);
 
   useEffect(() => {
+    let active = true;
     (async () => {
-      const [sSnap, ssSnap, uaSnap] = await Promise.all([
-        getDocs(collection(firestoreDb, "sellers")),
-        getDocs(query(collection(firestoreDb, "seller_sales"), where("date", ">=", daysAgoISO(30)))),
-        getDocs(query(collection(firestoreDb, "user_analytics"), where("created_at", ">=", todayISO()))),
-      ]);
-      setSellers(sSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Seller)));
-      setSales(ssSnap.docs.map((d) => d.data() as Sale));
-      const uniq = new Set(uaSnap.docs.map((d) => d.data() as any).map((r: { user_id: string | null }) => r.user_id).filter(Boolean));
-      setActiveUsersToday(uniq.size);
-      setLoading(false);
+      try {
+        const [sSnap, uaSnap] = await Promise.all([
+          getDocs(collection(firestoreDb, "sellers")),
+          getDocs(query(collection(firestoreDb, "user_analytics"), where("created_at", ">=", todayISO()))),
+        ]);
+
+        const fetchedSellers = sSnap.docs.map((d) => ({
+          id: d.id,
+          canteen_name: d.data().canteenName || d.data().canteen_name || "Unknown Canteen",
+          is_active: d.data().is_active ?? true,
+          is_suspended: !!d.data().is_suspended
+        } as Seller));
+
+        if (!active) return;
+        setSellers(fetchedSellers);
+        
+        const uniq = new Set(uaSnap.docs.map((d) => d.data() as any).map((r: { user_id: string | null }) => r.user_id).filter(Boolean));
+        setActiveUsersToday(uniq.size);
+
+        const fromMillis = new Date(daysAgoISO(30)).getTime();
+        const fetchedSales: Sale[] = [];
+        const salesAgg = new Map<string, { orders: number; revenue: number }>();
+
+        await Promise.all(
+          fetchedSellers.map(async (seller) => {
+            const salesQ = query(
+              collection(firestoreDb, "sellers", seller.id, "sales"),
+              where("timestamp", ">=", Timestamp.fromMillis(fromMillis))
+            );
+            
+            const snap = await getDocs(salesQ);
+            snap.forEach((doc) => {
+              const data = doc.data();
+              const ts = data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp || Date.now());
+              const dateStr = ts.toISOString().split("T")[0]; // "YYYY-MM-DD"
+              
+              const sKey = `${seller.id}|${dateStr}`;
+              if (!salesAgg.has(sKey)) salesAgg.set(sKey, { orders: 0, revenue: 0 });
+              const sCur = salesAgg.get(sKey)!;
+              sCur.orders += 1;
+              sCur.revenue += data.totalAmount || 0;
+            });
+          })
+        );
+
+        salesAgg.forEach((val, key) => {
+          const [seller_id, date] = key.split("|");
+          fetchedSales.push({ seller_id, date, total_orders: val.orders, total_revenue: val.revenue });
+        });
+
+        if (active) {
+          setSales(fetchedSales);
+          setLoading(false);
+        }
+      } catch (e) {
+        console.error("Error fetching overview stats:", e);
+        if (active) setLoading(false);
+      }
     })();
+    return () => { active = false; };
   }, []);
 
   const today = todayISO();
@@ -204,6 +254,16 @@ function DangerZone() {
         "user_analytics", "user_spend", "seller_sessions", "seller_sales",
         "seller_products", "orders", "sellers",
       ];
+
+      // Clear the nested sales subcollections first before deleting sellers
+      try {
+        const sellersSnap = await getDocs(collection(firestoreDb, "sellers"));
+        for (const sellerDoc of sellersSnap.docs) {
+          const salesSnap = await getDocs(collection(firestoreDb, "sellers", sellerDoc.id, "sales"));
+          for (const sale of salesSnap.docs) { await deleteDoc(sale.ref); }
+        }
+      } catch (e) { /* ignore nested delete errors */ }
+
       for (const table of labels) {
         try {
           const snap = await getDocs(collection(firestoreDb, table));

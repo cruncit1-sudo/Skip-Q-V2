@@ -1,14 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import Shell from "../components/Shell";
-import { db } from "../db";
+import { firestoreDb } from "../db";
+import { collection, getDocs, limit, query } from "firebase/firestore";
 import { axisStyle, tooltipStyle } from "../format";
 
 type A = { screen_name: string; event_type: string; dwell_seconds: number; scroll_depth_pct: number; session_id: string | null };
 
 export default function Behaviour() {
   const [rows, setRows] = useState<A[]>([]);
-  useEffect(() => { (async () => { const { data } = await db.from("user_analytics").select("screen_name, event_type, dwell_seconds, scroll_depth_pct, session_id").limit(5000); setRows(data ?? []); })(); }, []);
+  useEffect(() => { 
+    (async () => { 
+      try {
+        const q = query(collection(firestoreDb, "user_analytics"), limit(5000));
+        const snap = await getDocs(q);
+        const data = snap.docs.map((d) => d.data() as A);
+        setRows(data);
+      } catch (e) {
+        console.error("Error fetching analytics:", e);
+      }
+    })(); 
+  }, []);
 
   const dwellByScreen = useMemo(() => {
     const m = new Map<string, { sum: number; n: number }>();

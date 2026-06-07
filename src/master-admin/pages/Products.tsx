@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import Shell from "../components/Shell";
-import { db } from "../db";
+import { firestoreDb as db } from "../db";
+import { collection, getDocs } from "firebase/firestore";
 import { CHART_COLORS, inr, tooltipStyle } from "../format";
 
 type Product = { id: string; seller_id: string; product_name: string; emoji: string | null; price: number; category: string | null; total_sold: number; total_revenue: number; is_active: boolean; last_sold_at: string | null };
@@ -14,14 +15,87 @@ export default function Products() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortKey, setSortKey] = useState<"revenue" | "sold" | "price">("revenue");
 
-  useEffect(() => { (async () => {
-    const [{ data: p }, { data: s }] = await Promise.all([
-      db.from("seller_products").select("*"),
-      db.from("sellers").select("id, canteen_name"),
-    ]);
-    setProducts(p ?? []);
-    setSellers(Object.fromEntries((s ?? []).map((x: { id: string; canteen_name: string }) => [x.id, x.canteen_name])));
-  })(); }, []);
+  useEffect(() => { 
+    let active = true;
+    (async () => {
+      try {
+        const sellersSnap = await getDocs(collection(db, "sellers"));
+        const sMap: Record<string, string> = {};
+        const fetchedSellers = sellersSnap.docs.map((d) => {
+          const name = d.data().canteenName || d.data().canteen_name || "Unknown";
+          sMap[d.id] = name;
+          return { id: d.id, name };
+        });
+
+        const fetchedProducts = new Map<string, Product>();
+
+        // Fetch inventory catalog and aggregate sales across all sellers concurrently
+        await Promise.all(
+          fetchedSellers.map(async (seller) => {
+            try {
+              const prodSnap = await getDocs(collection(db, "sellers", seller.id, "products"));
+              prodSnap.forEach(doc => {
+                const data = doc.data();
+                fetchedProducts.set(`${seller.id}|${doc.id}`, {
+                  id: doc.id,
+                  seller_id: seller.id,
+                  product_name: data.name || "Unknown",
+                  emoji: data.icon || data.emoji || "🍽️",
+                  price: data.price || 0,
+                  category: data.category || "Other",
+                  total_sold: 0,
+                  total_revenue: 0,
+                  is_active: data.is_active ?? data.isActive ?? true,
+                  last_sold_at: null
+                });
+              });
+            } catch(e) { /* ignore if seller has no products collection */ }
+
+            try {
+              const salesSnap = await getDocs(collection(db, "sellers", seller.id, "sales"));
+              salesSnap.forEach(doc => {
+                const data = doc.data();
+                const ts = data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp || Date.now());
+                
+                if (data.items && Array.isArray(data.items)) {
+                  data.items.forEach((item: any) => {
+                    const pid = item.itemId || item.name;
+                    const pKey = `${seller.id}|${pid}`;
+                    
+                    // Create pseudo-product if it was sold but is missing from active inventory
+                    if (!fetchedProducts.has(pKey)) {
+                      fetchedProducts.set(pKey, {
+                        id: pid, seller_id: seller.id,
+                        product_name: item.name || "Unknown", emoji: item.icon || item.canteenIcon || "🍽️",
+                        price: item.price || 0, category: item.category || "Other",
+                        total_sold: 0, total_revenue: 0, is_active: true, last_sold_at: null
+                      });
+                    }
+                    
+                    const p = fetchedProducts.get(pKey)!;
+                    p.total_sold += item.qty || 1;
+                    p.total_revenue += (item.qty || 1) * (item.price || 0);
+                    
+                    if (!p.last_sold_at || ts.toISOString() > p.last_sold_at) {
+                      p.last_sold_at = ts.toISOString();
+                    }
+                  });
+                }
+              });
+            } catch(e) { /* ignore missing sales */ }
+          })
+        );
+
+        if (active) {
+          setSellers(sMap);
+          setProducts(Array.from(fetchedProducts.values()));
+        }
+      } catch (e) {
+        console.error("Error fetching products:", e);
+      }
+    })(); 
+    return () => { active = false; };
+  }, []);
 
   const filtered = useMemo(() => {
     let list = products.slice();

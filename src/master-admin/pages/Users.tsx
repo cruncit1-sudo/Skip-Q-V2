@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Shell from "../components/Shell";
-import { db } from "../db";
 import { getSession } from "../auth";
 import { inr, todayISO } from "../format";
 import { supabase } from "@/integrations/supabase/client";
+import { firestoreDb } from "../db";
+import { collection, getDocs, query, where } from "firebase/firestore";
 
 type Spend = { user_id: string; amount: number; product_names: string[] | null; created_at: string; payment_method: string | null };
 type AppUser = { id: string; full_name: string; user_id: string; phone: string; college_name: string; razorpay_customer_id: string | null; created_at: string };
@@ -27,13 +28,33 @@ export default function Users() {
   useEffect(() => {
     (async () => {
       const username = getSession()?.username ?? "";
-      const [{ data: sp }, { data: ua }, usersRes] = await Promise.all([
-        db.from("user_spend").select("user_id, amount, product_names, created_at, payment_method"),
-        db.from("user_analytics").select("user_id").gte("created_at", todayISO()),
+      
+      const [sellersSnap, uaSnap, usersRes] = await Promise.all([
+        getDocs(collection(firestoreDb, "sellers")),
+        getDocs(query(collection(firestoreDb, "user_analytics"), where("created_at", ">=", todayISO()))),
         supabase.functions.invoke("get-all-users", { body: { username } }),
       ]);
-      setSpends(sp ?? []);
-      setAnalyticsToday(ua ?? []);
+
+      const fetchedSpends: Spend[] = [];
+      await Promise.all(
+        sellersSnap.docs.map(async (sellerDoc) => {
+          const salesSnap = await getDocs(collection(firestoreDb, "sellers", sellerDoc.id, "sales"));
+          salesSnap.forEach((doc) => {
+            const data = doc.data();
+            const ts = data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp || Date.now());
+            fetchedSpends.push({
+              user_id: data.uid || "unknown",
+              amount: data.totalAmount || 0,
+              product_names: data.items && Array.isArray(data.items) ? data.items.map((i: any) => i.name) : [],
+              created_at: ts.toISOString(),
+              payment_method: data.payment === "Cash" ? "Cash" : "UPI",
+            });
+          });
+        })
+      );
+
+      setSpends(fetchedSpends);
+      setAnalyticsToday(uaSnap.docs.map((d) => d.data() as { user_id: string | null }));
       setUsers(((usersRes.data as { users?: AppUser[] })?.users) ?? []);
       setLoading(false);
     })();
