@@ -232,7 +232,7 @@ const Cart = () => {
                   {group.items.map((it) => (
                     <div
                       key={it.itemId}
-                      className="flex gap-3 items-center transition-all duration-[400ms]"
+                      className="flex gap-3 items-center transition-all duration-500"
                       style={{
                         ...liquidGlass,
                         padding: 12,
@@ -319,7 +319,7 @@ const Cart = () => {
                   ))}
                   <button
                     onClick={() => navigate(`/app/payment?canteenId=${encodeURIComponent(group.canteenId)}`)}
-                    className="w-full flex items-center justify-between relative overflow-hidden active:scale-[0.98] transition-all duration-[400ms]"
+                    className="w-full flex items-center justify-between relative overflow-hidden active:scale-[0.98] transition-all duration-500"
                     style={{
                       height: 52,
                       borderRadius: 18,
@@ -371,7 +371,7 @@ const Cart = () => {
               return (
               <button
               onClick={() => navigate(`/app/payment?canteenId=${encodeURIComponent(groups[0].canteenId)}`)}
-              className="w-full flex items-center justify-between relative overflow-hidden active:scale-[0.98] transition-all duration-[400ms]"
+              className="w-full flex items-center justify-between relative overflow-hidden active:scale-[0.98] transition-all duration-500"
               style={{
                 height: 56,
                 borderRadius: 18,

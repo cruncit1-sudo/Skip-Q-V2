@@ -4,7 +4,8 @@ import {
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import Shell from "../components/Shell";
-import { db } from "../db";
+import { firestoreDb } from "../db";
+import { collection, getDocs, query, where, deleteDoc } from "firebase/firestore";
 import { CHART_COLORS, axisStyle, daysAgoISO, inr, todayISO, tooltipStyle } from "../format";
 import { toast } from "sonner";
 
@@ -19,14 +20,14 @@ export default function Overview() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: s }, { data: ss }, { data: ua }] = await Promise.all([
-        db.from("sellers").select("id, canteen_name, is_active, is_suspended"),
-        db.from("seller_sales").select("seller_id, date, total_orders, total_revenue").gte("date", daysAgoISO(30)),
-        db.from("user_analytics").select("user_id, created_at").gte("created_at", todayISO()),
+      const [sSnap, ssSnap, uaSnap] = await Promise.all([
+        getDocs(collection(firestoreDb, "sellers")),
+        getDocs(query(collection(firestoreDb, "seller_sales"), where("date", ">=", daysAgoISO(30)))),
+        getDocs(query(collection(firestoreDb, "user_analytics"), where("created_at", ">=", todayISO()))),
       ]);
-      setSellers(s ?? []);
-      setSales(ss ?? []);
-      const uniq = new Set((ua ?? []).map((r: { user_id: string | null }) => r.user_id).filter(Boolean));
+      setSellers(sSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Seller)));
+      setSales(ssSnap.docs.map((d) => d.data() as Sale));
+      const uniq = new Set(uaSnap.docs.map((d) => d.data() as any).map((r: { user_id: string | null }) => r.user_id).filter(Boolean));
       setActiveUsersToday(uniq.size);
       setLoading(false);
     })();
@@ -204,11 +205,13 @@ function DangerZone() {
         "seller_products", "orders", "sellers",
       ];
       for (const table of labels) {
-        const { data, error: readError } = await db.from(table).select("id");
-        if (readError) throw new Error(`${table}: ${readError.message}`);
-        for (const row of data ?? []) {
-          const { error } = await db.from(table).delete().eq("id", row.id);
-          if (error) throw new Error(`${table}: ${error.message}`);
+        try {
+          const snap = await getDocs(collection(firestoreDb, table));
+          for (const row of snap.docs) {
+            await deleteDoc(row.ref);
+          }
+        } catch (error: any) {
+          throw new Error(`${table}: ${error.message}`);
         }
       }
       if (typeof window !== "undefined") {

@@ -3,7 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import Shell from "../components/Shell";
 import { logAudit, getSession } from "../auth";
-import { supabase } from "@/integrations/supabase/client";
+import { firestoreDb } from "../db";
+import { collection, doc, setDoc, getDocs, query, where } from "firebase/firestore";
+import { firebaseConfig } from "@/firebase";
 
 const generatePassword = () => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
@@ -13,6 +15,14 @@ const generatePassword = () => {
 };
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24);
+
+// Utility to prevent Firebase from hanging indefinitely
+const withTimeout = <T,>(promise: Promise<T>, ms: number, errorMessage: string) => {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(errorMessage)), ms))
+  ]);
+};
 
 export default function CreateSeller() {
   const navigate = useNavigate();
@@ -24,7 +34,7 @@ export default function CreateSeller() {
   });
   const [showPwd, setShowPwd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [created, setCreated] = useState<{ username: string; password: string } | null>(null);
+  const [created, setCreated] = useState<{ email: string; password: string } | null>(null);
 
   const set = <K extends keyof typeof form>(k: K, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -36,33 +46,48 @@ export default function CreateSeller() {
 
     setSubmitting(true);
     try {
-      const username = getSession()?.username ?? "";
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sb = supabase as any;
-      const { data: chk } = await sb.functions.invoke("admin-sellers", {
-        body: { username, op: "check_email", email: form.email },
-      });
-      if (chk?.exists) { toast.error("Email already in use"); setSubmitting(false); return; }
+      // 1. Check if email already exists in Firestore
+      const q = query(collection(firestoreDb, "sellers"), where("email", "==", form.email.toLowerCase().trim()));
+      const snap = await withTimeout(getDocs(q), 8000, "Database connection timed out. Please check if Firestore is enabled in Firebase Console.");
+      if (!snap.empty) { 
+        toast.error("Email already in use"); 
+        setSubmitting(false); 
+        return; 
+      }
 
+      // 2. Create user via Firebase Auth REST API (prevents Admin from being logged out)
+      const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: form.email.toLowerCase().trim(), password: form.password, returnSecureToken: true })
+      });
+      const authData = await res.json();
+      if (!res.ok) {
+        if (authData.error?.message === "EMAIL_EXISTS") throw new Error("Email already in use in Auth");
+        throw new Error(authData.error?.message || "Failed to create Auth user");
+      }
+      const uid = authData.localId;
+
+      // 3. Save to sellers collection in Firestore
       const payload = {
-        name: form.name, email: form.email, phone: form.phone,
-        canteen_name: form.canteen_name, canteen_location: form.canteen_location,
+        name: form.name.trim(), email: form.email.toLowerCase().trim(), phone: form.phone,
+        canteen_name: form.canteen_name.trim(), canteen_location: form.canteen_location.trim(),
         canteen_type: form.canteen_type,
         username: form.username || slug(form.canteen_name),
         upi_id: form.upi_id || null,
         bank_account_number: form.bank_account_number || null,
         bank_ifsc: form.bank_ifsc || null,
         bank_name: form.bank_name || null,
+        is_active: true,
+        is_suspended: false,
+        role: "seller",
+        created_at: new Date().toISOString(),
       };
-      const { data: res, error } = await sb.functions.invoke("admin-sellers", {
-        body: { username, op: "create", payload, password: form.password },
-      });
-      if (error) throw error;
-      if (res?.error) throw new Error(res.error);
+      await withTimeout(setDoc(doc(firestoreDb, "sellers", uid), payload), 8000, "Failed to save to Firestore. Is the database created?");
 
-      await logAudit("SELLER_CREATED", res?.id, { canteen_name: form.canteen_name, email: form.email });
+      await logAudit("SELLER_CREATED", uid, { canteen_name: form.canteen_name, email: form.email });
       toast.success("Seller account created. Share credentials securely.");
-      setCreated({ username: form.username || slug(form.canteen_name), password: form.password });
+      setCreated({ email: form.email.toLowerCase().trim(), password: form.password });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to create");
     } finally {
@@ -77,11 +102,11 @@ export default function CreateSeller() {
           <h2 style={{ marginTop: 0 }}>Seller created ✓</h2>
           <p style={{ color: "var(--ma-text-2)", fontSize: 13 }}>Share these credentials securely. They will not be shown again.</p>
           <div style={{ background: "#0A0A14", border: "1px solid #2563EB55", padding: 16, borderRadius: 12, fontFamily: "monospace", fontSize: 13, marginTop: 16 }}>
-            <div>Username: <strong>{created.username}</strong></div>
+            <div>Email: <strong>{created.email}</strong></div>
             <div>Password: <strong>{created.password}</strong></div>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <button className="ma-btn" onClick={() => { navigator.clipboard.writeText(`Username: ${created.username}\nPassword: ${created.password}`); toast.success("Copied"); }}>Copy</button>
+            <button className="ma-btn" onClick={() => { navigator.clipboard.writeText(`Email: ${created.email}\nPassword: ${created.password}`); toast.success("Copied"); }}>Copy</button>
             <button className="ma-btn ma-btn-outline" onClick={() => navigate("/master-admin/sellers")}>Done</button>
           </div>
         </div>

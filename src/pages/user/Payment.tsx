@@ -611,13 +611,13 @@ const Payment = () => {
             type="button"
             disabled={placing}
             onClick={() => placeOrder("Online")}
-            className="w-full text-left group active:scale-[0.98] transition-all duration-[400ms] ease-out flex items-center justify-between"
+            className="w-full text-left group active:scale-[0.98] transition-all duration-500 ease-out flex items-center justify-between"
             style={{ ...liquidGlass, padding: 20, borderRadius: 20, opacity: placing ? 0.65 : 1 }}
           >
             <span style={glassHighlight} aria-hidden />
             <div className="flex items-center relative z-10" style={{ gap: 14 }}>
               <div
-                className="flex items-center justify-center group-hover:scale-105 transition-transform duration-[400ms]"
+                className="flex items-center justify-center group-hover:scale-105 transition-transform duration-500"
                 style={{
                   width: 44,
                   height: 44,
@@ -658,13 +658,13 @@ const Payment = () => {
             type="button"
             disabled={placing || !codAllowed || codChecking}
             onClick={() => placeOrder("Cash")}
-            className="w-full text-left group active:scale-[0.98] transition-all duration-[400ms] ease-out flex items-center justify-between"
+            className="w-full text-left group active:scale-[0.98] transition-all duration-500 ease-out flex items-center justify-between"
             style={{ ...liquidGlass, padding: 20, borderRadius: 20, opacity: placing || !codAllowed || codChecking ? 0.5 : 1, cursor: !codAllowed && !codChecking ? "not-allowed" : undefined }}
           >
             <span style={glassHighlight} aria-hidden />
             <div className="flex items-center relative z-10" style={{ gap: 14 }}>
               <div
-                className="flex items-center justify-center group-hover:scale-105 transition-transform duration-[400ms]"
+                className="flex items-center justify-center group-hover:scale-105 transition-transform duration-500"
                 style={{
                   width: 44,
                   height: 44,
