@@ -10,6 +10,8 @@ import {
 import { getUserSession } from "@/utils/sessionManager";
 import OrderConfirmedAnimation from "../../components/OrderConfirmedAnimation";
 import { QRCodeSVG } from "qrcode.react";
+import { getFirestore, doc, onSnapshot } from "firebase/firestore";
+import { app } from "@/firebase";
 
 const OrderStatus = () => {
   const navigate = useNavigate();
@@ -36,23 +38,43 @@ const OrderStatus = () => {
   useEffect(() => {
     setOrder(resolve());
     const unsub = subscribeOrders(() => setOrder(resolve()));
+    let unsubFirestore: (() => void) | undefined;
     // If the order is missing (e.g., fresh session, new device, cache wipe),
     // pull from backend and retry. This is the root-cause fix for "items
     // missing" when tapping a canteen in My Orders.
     let cancelled = false;
     const ensure = async () => {
       if (resolve()) return;
+      
+      // Fallback: Fetch directly from Firestore to bypass any index errors
+      if (orderParamId) {
+        try {
+          const db = getFirestore(app);
+          unsubFirestore = onSnapshot(doc(db, "orders", orderParamId), (docSnap) => {
+            if (docSnap.exists()) {
+              setOrder(docSnap.data() as Order);
+            }
+          });
+        } catch (err) {
+          console.error("Single order fetch error:", err);
+        }
+      }
+
       try {
         await loadOrdersFromBackend(null, getUserSession()?.id);
       } catch {
         /* offline — subscription will pick it up later */
       }
-      if (!cancelled) setOrder(resolve());
+      const resolvedOrder = resolve();
+      if (!cancelled && resolvedOrder) {
+        setOrder(resolvedOrder);
+      }
     };
     ensure();
     return () => {
       cancelled = true;
       unsub();
+      if (unsubFirestore) unsubFirestore();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderParamId]);
@@ -88,8 +110,10 @@ const OrderStatus = () => {
 
   return (
     <div
-      className="user-page w-full flex flex-col items-center"
+      className="user-page w-full flex flex-col overflow-y-auto overflow-x-hidden"
       style={{
+        height: "100dvh",
+        WebkitOverflowScrolling: "touch",
         color: "hsl(var(--user-text))",
         fontFamily:
           "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
@@ -97,7 +121,7 @@ const OrderStatus = () => {
     >
       {/* Top AppBar */}
       <header
-        className="user-content border-rose-200 user-content-readable flex items-center justify-start"
+        className="user-content border-rose-200 user-content-readable flex items-center justify-start w-full mx-auto"
         style={{
           paddingTop: "calc(env(safe-area-inset-top, 0px) + 14px)",
           paddingBottom: 10,
@@ -109,13 +133,15 @@ const OrderStatus = () => {
       </header>
 
       <main
-        className="user-content border-rose-200 user-content-readable flex-1 flex flex-col items-center"
+        className="user-content border-rose-200 user-content-readable flex-1 flex flex-col items-center w-full mx-auto"
         style={{
           paddingTop: 8,
           paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)",
         }}
       >
-        <OrderConfirmedAnimation reduceMotion={reduceMotion} />
+        <div className="pointer-events-none flex justify-center w-full shrink-0">
+          <OrderConfirmedAnimation reduceMotion={reduceMotion} />
+        </div>
 
         {/* Bento Grid */}
         <div className="grid grid-cols-1 gap-3 w-full">

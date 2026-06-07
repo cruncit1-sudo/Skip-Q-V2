@@ -6,7 +6,7 @@ import {
   type Order,
 } from "@/lib/sellerOrders";
 import { getUserSession } from "@/utils/sessionManager";
-import { getFirestore, collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, query, where, onSnapshot } from "firebase/firestore";
 import { app } from "@/firebase";
 
 type OrderRow = {
@@ -48,12 +48,12 @@ const Orders = () => {
     const db = getFirestore(app);
     const q = query(
       collection(db, "orders"),
-      where("appUserId", "==", userId),
-      orderBy("createdAt", "desc")
+      where("appUserId", "==", userId)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedOrders = snapshot.docs.map((doc) => doc.data() as Order);
+      fetchedOrders.sort((a, b) => b.createdAt - a.createdAt);
       setOrders(fetchedOrders);
       setLoading(false);
     }, (error) => {
