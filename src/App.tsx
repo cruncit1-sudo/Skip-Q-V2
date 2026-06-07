@@ -9,9 +9,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import OfflineBanner from "@/components/OfflineBanner";
 import LoadingScreen from "@/components/LoadingScreen";
 import OrbitLoader from "@/components/OrbitLoader";
-import { getFirestore, collection, query, documentId, where, getDocs } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
-import SellerRoute from "./components/guards/SellerRoute.jsx";
+import RootRedirect from "./components/RootRedirect.jsx";
+import UserRoute from "./components/guards/UserRoute.jsx";
 import { preloadInventoryForSellers } from "@/lib/sellerInventory";
 import { initInventoryRealtime } from "@/lib/sellerInventory";
 import { loadOrdersFromBackend } from "@/lib/sellerOrders";
@@ -22,16 +21,15 @@ import { getCart } from "@/lib/userCart";
 import { applyPwaHeadForPath } from "@/lib/pwaLaunch";
 
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
-const SellerDashboard = lazy(() => import("./pages/seller/Dashboard.tsx"));
-const SellerInventory = lazy(() => import("./pages/seller/Inventory.tsx"));
-const SellerMenu = lazy(() => import("./pages/seller/Menu.tsx"));
-const SellerStaff = lazy(() => import("./pages/seller/Staff.tsx"));
-const SellerOffers = lazy(() => import("./pages/seller/Offers.tsx"));
-const SellerSettings = lazy(() => import("./pages/seller/Settings.tsx"));
-const SellerOrders = lazy(() => import("./pages/seller/Orders.tsx"));
-const SalesDashboard = lazy(() => import("./pages/seller/SalesDashboard.tsx"));
-const SalesReports = lazy(() => import("./pages/seller/SalesReports.tsx"));
-const SellerLogin = lazy(() => import("./pages/seller/Login.tsx"));
+const UserHome = lazy(() => import("./pages/user/Home.tsx"));
+const UserCart = lazy(() => import("./pages/user/Cart.tsx"));
+const UserOrders = lazy(() => import("./pages/user/Orders.tsx"));
+const UserProfile = lazy(() => import("./pages/user/Profile.tsx"));
+const UserMenu = lazy(() => import("./pages/user/Menu.tsx"));
+const UserPayment = lazy(() => import("./pages/user/Payment.tsx"));
+const UserPaymentCallback = lazy(() => import("./pages/user/PaymentCallback.tsx"));
+const UserOrderStatus = lazy(() => import("./pages/user/OrderStatus.tsx"));
+const UserLogin = lazy(() => import("./pages/user/Login.tsx"));
 
 // Aggressive caching tuned for low-bandwidth campus networks.
 // Data stays "fresh" for 5 min, kept in memory for 24h, and persisted to
@@ -55,12 +53,7 @@ const persister =
 const AppDataPreloader = () => {
   useEffect(() => {
     let alive = true;
-    let stopRealtime = () => {};
-    try {
-      stopRealtime = initInventoryRealtime() || (() => {});
-    } catch (e) {
-      console.warn("Realtime inventory init failed (likely due to Firebase migration):", e);
-    }
+    const stopRealtime = initInventoryRealtime();
     getRegisteredCanteensFromBackend()
       .then((canteens) => {
         if (!alive) return;
@@ -71,38 +64,9 @@ const AppDataPreloader = () => {
       .catch(() => null);
     const userId = getUserSession()?.id;
     if (userId) loadOrdersFromBackend(null, userId).catch(() => null);
-    // Validate every item in cart against live product table on app mount.
-    // Removes any line whose product was deactivated since last visit so a
-    // stale cart can never silently turn into a ghost order.
     (async () => {
       const cart = getCart();
       if (!cart || cart.length === 0) return;
-      const ids = cart.map((c) => c.itemId);
-      let data: any[] | null = null;
-      let error = null;
-      try {
-        const db = getFirestore();
-        data = [];
-        for (let i = 0; i < ids.length; i += 30) {
-          const chunk = ids.slice(i, i + 30);
-          const q = query(collection(db, "inventory"), where(documentId(), "in", chunk));
-          const snapshot = await getDocs(q);
-          snapshot.forEach((doc) => {
-            data!.push({ id: doc.id, is_active: doc.data().status === "Active" || doc.data().is_active });
-          });
-        }
-      } catch (err) {
-        error = err;
-      }
-      if (error || !data) return;
-      const validIds = new Set(data.filter((p) => p.is_active).map((p) => p.id));
-      const cleaned = cart.filter((c) => validIds.has(c.itemId));
-      if (cleaned.length !== cart.length) {
-        // Re-write cart via the canonical helper to fire change events.
-        const { clearCart, addToCart } = await import("@/lib/userCart");
-        clearCart();
-        cleaned.forEach((c) => addToCart({ ...c }, c.qty));
-      }
     })().catch(() => null);
     return () => { alive = false; stopRealtime(); };
   }, []);
@@ -127,7 +91,6 @@ const LaunchGate = () => {
     const init = async () => {
       try {
         await Promise.all([
-          getAuth().authStateReady().catch(() => null) || Promise.resolve(),
           new Promise((r) => setTimeout(r, 1200)),
         ]);
       } finally {
@@ -184,23 +147,22 @@ const App = () => (
           }
         >
           <Routes>
-            <Route path="/" element={<Navigate to="/seller/login" replace />} />
+            <Route path="/" element={<RootRedirect />} />
 
-          {/* SELLER APP */}
-          <Route path="/seller/login" element={<SellerLogin />} />
-          <Route path="/seller/dashboard" element={<SellerRoute><SellerDashboard /></SellerRoute>} />
-          <Route path="/seller/inventory" element={<SellerRoute><SellerInventory /></SellerRoute>} />
-          <Route path="/seller/menu" element={<SellerRoute><SellerMenu /></SellerRoute>} />
-          <Route path="/seller/staff" element={<SellerRoute><SellerStaff /></SellerRoute>} />
-          <Route path="/seller/offers" element={<SellerRoute><SellerOffers /></SellerRoute>} />
-          <Route path="/seller/settings" element={<SellerRoute><SellerSettings /></SellerRoute>} />
-          <Route path="/seller/orders" element={<SellerRoute><SellerOrders /></SellerRoute>} />
-          <Route path="/seller/sales" element={<SellerRoute><SalesDashboard /></SellerRoute>} />
-          <Route path="/seller/sales/reports" element={<SellerRoute><SalesReports /></SellerRoute>} />
-          <Route path="/seller" element={<Navigate to="/seller/dashboard" replace />} />
+          {/* USER APP */}
+          <Route path="/app/login" element={<UserLogin />} />
+          <Route path="/app/home" element={<UserRoute><UserHome /></UserRoute>} />
+          <Route path="/app/cart" element={<UserRoute><UserCart /></UserRoute>} />
+          <Route path="/app/orders" element={<UserRoute><UserOrders /></UserRoute>} />
+          <Route path="/app/profile" element={<UserRoute><UserProfile /></UserRoute>} />
+          <Route path="/app/menu/:id" element={<UserRoute><UserMenu /></UserRoute>} />
+          <Route path="/app/payment" element={<UserRoute><UserPayment /></UserRoute>} />
+          <Route path="/app/payment-callback" element={<UserRoute><UserPaymentCallback /></UserRoute>} />
+          <Route path="/app/order-status" element={<UserRoute><UserOrderStatus /></UserRoute>} />
+          <Route path="/app" element={<Navigate to="/app/home" replace />} />
 
           <Route path="/404" element={<NotFound />} />
-            <Route path="*" element={<Navigate to="/seller/login" replace />} />
+            <Route path="*" element={<RootRedirect />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

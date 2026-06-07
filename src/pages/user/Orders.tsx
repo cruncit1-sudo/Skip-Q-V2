@@ -3,12 +3,11 @@ import { useNavigate } from "react-router-dom";
 import UserLayout from "@/components/user/UserLayout";
 import { OrderListSkeleton } from "@/components/user/Skeletons";
 import {
-  getOrders,
-  loadOrdersFromBackend,
-  subscribeOrders,
   type Order,
 } from "@/lib/sellerOrders";
 import { getUserSession } from "@/utils/sessionManager";
+import { getFirestore, collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { app } from "@/firebase";
 
 type OrderRow = {
   id: string;
@@ -36,15 +35,33 @@ const toOrderRow = (o: Order): OrderRow => ({
 
 const Orders = () => {
   const navigate = useNavigate();
-  const [orders, setOrders] = useState<Order[]>(() => getOrders());
-  const [loading, setLoading] = useState(() => getOrders().length === 0);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = subscribeOrders(() => setOrders(getOrders()));
-    loadOrdersFromBackend(null, getUserSession()?.id)
-      .then((rows) => { setOrders(rows); setLoading(false); })
-      .catch(() => { setOrders([]); setLoading(false); });
-    return unsub;
+    const userId = getUserSession()?.id;
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    const db = getFirestore(app);
+    const q = query(
+      collection(db, "orders"),
+      where("appUserId", "==", userId),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedOrders = snapshot.docs.map((doc) => doc.data() as Order);
+      setOrders(fetchedOrders);
+      setLoading(false);
+    }, (error) => {
+      console.error("Firestore real-time orders error:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const { pendingGroups, completedGroups } = useMemo(() => {

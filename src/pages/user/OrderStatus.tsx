@@ -152,14 +152,7 @@ const OrderStatus = () => {
               }}
             >
               <QRCodeSVG
-                value={JSON.stringify({
-                  orderId,
-                  total,
-                  items: items.map((i) => ({ n: i.name, q: i.qty })),
-                  seller: sellerName,
-                  payment: order?.payment ?? method,
-                  ts: order?.createdAt ?? Date.now(),
-                })}
+                value={order?.uid ?? ""}
                 size={320}
                 level="H"
                 bgColor="#FFFFFF"

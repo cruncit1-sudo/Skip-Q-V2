@@ -4,12 +4,14 @@ import { clearCart, getCart, removeCartItem } from "@/lib/userCart";
 import { createOrder, createOrderOptimistic, hasSoundPlayed, markSoundPlayed } from "@/lib/sellerOrders";
 import { pinItem } from "@/lib/userPins";
 import { playOrderConfirmation } from "../../utils/orderConfirmation";
-import { supabase } from "@/integrations/supabase/client";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { doc, getDoc } from "firebase/firestore";
+import { app, db } from "@/firebase";
+import { isItemAvailable } from "@/lib/sellerInventory";
 import { getUserSession } from "@/utils/sessionManager";
 import { getActiveDiscountPctForSeller, loadOffersFromBackend } from "@/lib/sellerOffers";
 import { isIOSPWA } from "../../utils/deviceDetect";
 import { beginOrder, endOrder } from "@/utils/orderGuard";
-import { checkCodAvailability, getCodTimeMessage } from "@/utils/codTimeCheck";
 
 type RazorpayPaymentResponse = Record<string, unknown>;
 type RazorpayOptions = {
@@ -126,28 +128,6 @@ const Payment = () => {
   const [params] = useSearchParams();
   const [placing, setPlacing] = useState(false);
   const selectedCanteenId = params.get("canteenId");
-  const [codAllowed, setCodAllowed] = useState(false);
-  const [codChecking, setCodChecking] = useState(true);
-
-  // Re-verify COD availability against the server clock on mount and every
-  // 60s while the page is open so an expired window disables the button
-  // without needing a manual refresh.
-  useEffect(() => {
-    let cancelled = false;
-    const verify = async () => {
-      setCodChecking(true);
-      const { allowed } = await checkCodAvailability();
-      if (cancelled) return;
-      setCodAllowed(allowed);
-      setCodChecking(false);
-    };
-    void verify();
-    const interval = window.setInterval(verify, 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
 
   // Pre-warm the OrderStatus chunk so post-payment navigation is instant.
   useEffect(() => {
@@ -190,15 +170,16 @@ const Payment = () => {
       const sellerKey = activeCart[0]?.canteenId ?? null;
       const signature = `${sellerKey ?? ""}::${subtotal}`;
       try {
-        const { data, error } = await supabase.functions.invoke("create-razorpay-order", {
-          body: {
-            subtotal,
-            sellerId: sellerKey,
-            receipt: `bitez_${Date.now()}`,
-          },
+        const functions = getFunctions(app);
+        const createRazorpayOrder = httpsCallable(functions, "create-razorpay-order");
+        const result = await createRazorpayOrder({
+          subtotal,
+          sellerId: sellerKey,
+          receipt: `bitez_${Date.now()}`,
         });
+        const data = result.data as any;
         if (cancelled) return;
-        if (error || !data?.order_id) return;
+        if (!data?.order_id) return;
         setPrepaid({
           signature,
           order_id: data.order_id,
@@ -256,36 +237,34 @@ const Payment = () => {
       navigate("/app/login");
       return;
     }
-    // Re-verify COD against server time at the exact moment of placement.
-    if (method === "Cash") {
-      const { allowed } = await checkCodAvailability();
-      if (!allowed) {
-        endOrder();
-        alert(getCodTimeMessage());
-        setCodAllowed(false);
-        return;
-      }
-    }
     setPlacing(true);
     // Last-line safety net: even if Realtime missed an inactivation, never
     // let an order go through with items that are no longer available.
     try {
       const ids = activeCart.map((c) => c.itemId);
       const uniqueIds = Array.from(new Set(ids));
+      
       const checks = await Promise.all(
         uniqueIds.map(async (id) => {
-          const { data } = await supabase.rpc("is_item_available", { product_id: id });
-          return { id, available: data === true };
-        }),
+          try {
+            const docSnap = await getDoc(doc(db, "inventory", id));
+            if (!docSnap.exists()) return { id, available: false, name: "" };
+            const data = docSnap.data();
+            const available = isItemAvailable({ ...data, id } as any);
+            return { id, available, name: data.name };
+          } catch {
+            return { id, available: true, name: "" }; // Allow on error/offline
+          }
+        })
       );
-      const unavailableIds = checks.filter((c) => !c.available).map((c) => c.id);
-      const { data: nameRows } = unavailableIds.length
-        ? await supabase
-            .from("seller_products")
-            .select("id, product_name")
-            .in("id", unavailableIds)
-        : { data: [] as { id: string; product_name: string }[] };
-      const inactive = (nameRows ?? []).map((r) => ({ id: r.id, product_name: r.product_name }));
+      
+      const inactive = checks
+        .filter((c) => !c.available)
+        .map((c) => ({
+          id: c.id,
+          product_name: c.name || activeCart.find((cart) => cart.itemId === c.id)?.name || "Item",
+        }));
+        
       if (inactive.length > 0) {
         inactive.forEach((p) => {
           activeCart
@@ -365,16 +344,21 @@ const Payment = () => {
           ? { order_id: prepaid.order_id, amount: prepaid.amount, currency: prepaid.currency, key_id: prepaid.key_id }
           : null;
       if (!data) {
-        const resp = await supabase.functions.invoke("create-razorpay-order", {
-          body: { subtotal, sellerId: sellerKey, receipt: `bitez_${Date.now()}` },
-        });
-        if (resp.error || !resp.data?.order_id) {
+        try {
+          const functions = getFunctions(app);
+          const createRazorpayOrder = httpsCallable(functions, "create-razorpay-order");
+          const resp = await createRazorpayOrder({ subtotal, sellerId: sellerKey, receipt: `bitez_${Date.now()}` });
+          data = resp.data as any;
+        } catch (error) {
+          console.error("Failed to start payment:", error);
+        }
+        
+        if (!data?.order_id) {
           alert("Unable to start payment. Please try again.");
           setPlacing(false);
           endOrder();
           return;
         }
-        data = resp.data;
       }
       // ---- iOS PWA fork: Razorpay's checkout.js refuses to open inside
       // iOS WKWebView standalone mode ("This browser is not supported").
@@ -656,10 +640,10 @@ const Payment = () => {
           {/* Cash Card */}
           <button
             type="button"
-            disabled={placing || !codAllowed || codChecking}
+            disabled={placing}
             onClick={() => placeOrder("Cash")}
             className="w-full text-left group active:scale-[0.98] transition-all duration-500 ease-out flex items-center justify-between"
-            style={{ ...liquidGlass, padding: 20, borderRadius: 20, opacity: placing || !codAllowed || codChecking ? 0.5 : 1, cursor: !codAllowed && !codChecking ? "not-allowed" : undefined }}
+            style={{ ...liquidGlass, padding: 20, borderRadius: 20, opacity: placing ? 0.5 : 1 }}
           >
             <span style={glassHighlight} aria-hidden />
             <div className="flex items-center relative z-10" style={{ gap: 14 }}>
@@ -688,7 +672,7 @@ const Payment = () => {
                   Cash on Delivery
                 </h3>
                 <p style={{ color: "#6E6E73", fontSize: 12, marginTop: 2 }}>
-                  {codChecking ? "Checking availability…" : codAllowed ? "Pay with Cash" : "Available 8 AM – 8 PM only"}
+                  Pay with Cash
                 </p>
               </div>
             </div>

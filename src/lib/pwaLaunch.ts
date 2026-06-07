@@ -18,8 +18,6 @@ type PwaHeadConfig = {
 };
 
 export function adminPwaKindForPath(pathname: string): AdminPwaKind | null {
-  if (pathname.startsWith("/seller")) return "seller-admin";
-  if (pathname.startsWith("/master-admin")) return "master-admin";
   return null;
 }
 
@@ -30,8 +28,7 @@ export function isStandalonePwa() {
 }
 
 export function adminHomeForKind(kind: AdminPwaKind, authenticated: boolean) {
-  if (kind === "master-admin") return authenticated ? "/master-admin/overview" : "/master-admin/login";
-  return authenticated ? "/seller/dashboard" : "/seller/login";
+  return "/";
 }
 
 function hasStoredSession(kind: AdminPwaKind) {
@@ -73,13 +70,6 @@ export function getStoredAdminLaunchKind(): AdminPwaKind | null {
 }
 
 function configForPath(pathname: string): PwaHeadConfig {
-  const kind = adminPwaKindForPath(pathname);
-  if (kind === "master-admin") {
-    return { manifest: "/manifest-admin.webmanifest", title: "Bitez Master Admin", theme: "#0A0A0F", statusBar: "black-translucent", standalone: true, kind };
-  }
-  if (kind === "seller-admin") {
-    return { manifest: "/manifest-seller-admin.webmanifest", title: "Bitez Admin", theme: "#050505", statusBar: "black-translucent", standalone: true, kind };
-  }
   // User app uses the light surface (matches --user-app-bg hsl(214 32% 94%)).
   // Using a dark theme color here paints a black bar in the iOS PWA status
   // area and behind translucent surfaces — keep it in sync with the page bg.
@@ -99,14 +89,10 @@ function ensureMeta(name: string) {
 export function applyPwaHeadForPath(pathname = window.location.pathname) {
   if (typeof document === "undefined" || typeof window === "undefined") return;
   const config = configForPath(pathname);
-  const isSellerAdmin = config.kind === "seller-admin";
-  const isMasterAdmin = config.kind === "master-admin";
-  const isUserApp = config.kind === "user" && (pathname === "/" || pathname.startsWith("/app"));
+  const isUserApp = true;
 
-  document.documentElement.classList.toggle("seller-admin-route", isSellerAdmin);
-  document.documentElement.classList.toggle("master-admin-route", isMasterAdmin);
-  document.documentElement.classList.toggle("admin-app-route", isSellerAdmin || isMasterAdmin);
-  document.body?.classList.toggle("admin-app-route", isSellerAdmin || isMasterAdmin);
+  document.documentElement.classList.remove("seller-admin-route", "master-admin-route", "admin-app-route");
+  document.body?.classList.remove("admin-app-route");
   document.documentElement.classList.toggle("user-app-route", isUserApp);
   document.body?.classList.toggle("user-app-route", isUserApp);
 
@@ -123,12 +109,4 @@ export function applyPwaHeadForPath(pathname = window.location.pathname) {
   ensureMeta("apple-mobile-web-app-title").setAttribute("content", config.title);
   ensureMeta("apple-mobile-web-app-capable").setAttribute("content", config.standalone ? "yes" : "no");
   ensureMeta("mobile-web-app-capable").setAttribute("content", config.standalone ? "yes" : "no");
-
-  if (config.kind === "seller-admin" || config.kind === "master-admin") {
-    try {
-      window.localStorage.setItem(LAUNCH_INTENT_KEY, JSON.stringify({ kind: config.kind, savedAt: Date.now() }));
-    } catch {
-      /* ignore private-mode storage failures */
-    }
-  }
 }

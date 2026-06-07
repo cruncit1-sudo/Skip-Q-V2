@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions, connectFunctionsEmulator } from "firebase/functions";
 
 export const firebaseConfig = {
   apiKey: "AIzaSyCH6FjwX0FwWEAs9QU5SwSRfXzmg9p582E",
@@ -21,5 +22,11 @@ if (app) {
   console.log("🔥 Firebase is successfully connected to the app!");
   console.log("Firebase Project:", app.options.projectId);
 }
+
+const functions = getFunctions(app);
+// Uncomment this if you are running the Firebase Emulator locally!
+// if (window.location.hostname === "localhost" || window.location.hostname.startsWith("10.")) {
+//   connectFunctionsEmulator(functions, window.location.hostname, 5001);
+// }
 
 export { app, analytics, db };

@@ -21,17 +21,10 @@ export default function RootRedirect() {
   const adminPwaRedirect = getAdminStandaloneRedirect(path);
   if (adminPwaRedirect) return <Navigate to={adminPwaRedirect} replace />;
 
-  if (path.startsWith('/master-admin')) {
-    return <Navigate to={s?.role === 'master_admin' ? '/master-admin/overview' : '/master-admin/login'} replace />;
-  }
-  if (path.startsWith('/seller')) {
-    return <Navigate to={s?.role === 'seller' ? '/seller/dashboard' : '/seller/login'} replace />;
-  }
   if (path.startsWith('/app')) {
     return <Navigate to={s?.role === 'user' ? '/app/home' : '/app/login'} replace />;
   }
-  if (!s) return <Navigate to="/app/login" replace />;
-  if (s.role === 'master_admin') return <Navigate to="/master-admin/overview" replace />;
-  if (s.role === 'seller') return <Navigate to="/seller/dashboard" replace />;
+  
+  if (!s || s.role !== 'user') return <Navigate to="/app/login" replace />;
   return <Navigate to="/app/home" replace />;
 }

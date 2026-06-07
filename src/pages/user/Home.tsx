@@ -8,6 +8,7 @@ import { addToCart, getCart, pruneCartByCanteens, setCartQty, subscribeCart } fr
 import { getActiveOffers, loadOffersFromBackend, subscribeOffers, type SellerOffer } from "@/lib/sellerOffers";
 import { getRegisteredCanteens, getRegisteredCanteensFromBackend, subscribeProfile, type SellerProfile } from "@/lib/sellerProfile";
 import { getUserName } from "@/utils/sessionManager";
+import { logoutUser } from "@/lib/userAuth";
 
 type Offer = { canteen: string; title: string; discount: string; active: boolean; sellerId: string | null };
 type Repeat = {
@@ -145,6 +146,18 @@ const Home = () => {
     navigate(`/app/payment?canteenId=${encodeURIComponent(cartCanteenKey(r.canteenId))}`);
   };
 
+  const handleLogout = async () => {
+    if (!window.confirm("Are you sure you want to log out?")) return;
+    try {
+      await logoutUser();
+    } catch (err) {
+      console.error("Logout auth error:", err);
+    }
+    localStorage.removeItem("bitez_user_session");
+    localStorage.removeItem("active_session");
+    window.location.href = "/app/login";
+  };
+
   return (
     <UserLayout>
       {/* Friendly offline overlay shown only when we have nothing cached
@@ -159,22 +172,37 @@ const Home = () => {
         }}
       >
         {/* Header */}
-        <h1
-          className="user-home-greeting"
+        <div
+          className="flex items-center justify-between"
           style={{
             paddingTop: "var(--home-greeting-top, calc(env(safe-area-inset-top, 0px) + clamp(20px, 5svh, 44px)))",
-            marginTop: 0,
             paddingLeft: "var(--user-page-pad)",
             paddingRight: "var(--user-page-pad)",
-            fontSize: 28,
-            fontWeight: 800,
-            letterSpacing: 0,
-            color: "#1D1D1F",
             marginBottom: "var(--home-greeting-gap, clamp(24px, 5.5svh, 52px))",
           }}
         >
-          Hey, {getUserName()} 👋
-        </h1>
+          <h1
+            className="user-home-greeting"
+            style={{
+              marginTop: 0,
+              marginBottom: 0,
+              fontSize: 28,
+              fontWeight: 800,
+              letterSpacing: 0,
+              color: "#1D1D1F",
+            }}
+          >
+            Hey, {getUserName()} 👋
+          </h1>
+          <button
+            onClick={handleLogout}
+            className="flex items-center justify-center rounded-full active:scale-95 transition-transform shrink-0"
+            style={{ background: "#FEE2E2", color: "#DC2626", width: 44, height: 44 }}
+            aria-label="Log Out"
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 22 }}>logout</span>
+          </button>
+        </div>
 
         {/* Today's Offers — horizontal scroll */}
         {offers.length > 0 && (

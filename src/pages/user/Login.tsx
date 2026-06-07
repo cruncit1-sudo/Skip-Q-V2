@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { getStoredUserId, loginWithPin } from "@/lib/userAuth";
+import { useNavigate } from "react-router-dom";
 import { getUserSession } from "@/utils/sessionManager";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 const UserLogin = () => {
   const navigate = useNavigate();
-  const [pin, setPin] = useState("");
-  const [userId, setUserId] = useState(() => getStoredUserId());
+  const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [shake, setShake] = useState(false);
@@ -23,22 +22,39 @@ const UserLogin = () => {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
-    if (!/^[a-z0-9_]{3,30}$/.test(userId.trim().toLowerCase())) {
-      setErrorMsg("Enter your User ID");
-      triggerShake();
-      return;
-    }
-    if (!/^\d{4}$/.test(pin)) {
-      setErrorMsg("Enter your 4-digit PIN");
+    if (!/^\d{10}$/.test(phone)) {
+      setErrorMsg("Enter a valid 10-digit mobile number");
       triggerShake();
       return;
     }
     setLoading(true);
     try {
-      await loginWithPin(userId.trim().toLowerCase(), pin);
-      navigate("/app/home", { replace: true });
+      const db = getFirestore();
+      const userRef = doc(db, "users", phone);
+      const userSnap = await getDoc(userRef);
+
+      let session;
+
+      // 1. Check if user exists in Firebase Firestore
+      if (userSnap.exists()) {
+        const userData = userSnap.data();
+        session = { id: phone, role: "user", phone, full_name: userData.full_name || "Student" };
+      } else {
+        // 2. If not, create a new user profile in Firebase
+        const newUser = { phone, role: "user", full_name: "Student", user_id: phone, created_at: Date.now() };
+        await setDoc(userRef, newUser);
+        session = { id: phone, role: "user", phone, full_name: "Student" };
+      }
+
+      // Fallback session storage. If your sessionManager uses a specific key 
+      // (like 'active_session' or 'bitez_user_session'), it will be written here.
+      localStorage.setItem("bitez_user_session", JSON.stringify(session));
+      localStorage.setItem("active_session", JSON.stringify(session));
+
+      // Trigger hard reload so session manager cleanly reads the fresh login cache
+      window.location.href = "/app/home";
     } catch (err) {
-      setErrorMsg((err as Error).message || "Incorrect User ID or PIN");
+      setErrorMsg((err as Error).message || "Could not log in");
       triggerShake();
     } finally {
       setLoading(false);
@@ -103,7 +119,7 @@ const UserLogin = () => {
               className="block ml-1 mb-2 uppercase font-semibold tracking-wider"
               style={{ fontSize: 13, color: "#86868B" }}
             >
-              ENTER USER ID
+              ENTER MOBILE NUMBER
             </label>
             <div
               className="lg-input flex items-center px-5"
@@ -116,60 +132,20 @@ const UserLogin = () => {
                 className="material-symbols-outlined mr-4"
                 style={{ color: "#8E8E93", fontSize: 22 }}
               >
-                badge
+                call
               </span>
               <input
-                type="text"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                value={userId}
-                onChange={(e) =>
-                  setUserId(
-                    e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""),
-                  )
-                }
-                placeholder="your_user_id"
-                className="flex-1 bg-transparent outline-none border-none font-medium"
-                style={{ fontSize: 17, color: "#1D1D1F" }}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label
-              className="block ml-1 mb-2 uppercase font-semibold tracking-wider"
-              style={{ fontSize: 13, color: "#86868B" }}
-            >
-              ENTER LOGIN PIN
-            </label>
-            <div
-              className="lg-input flex items-center px-5"
-              style={{
-                ...lgStyle,
-                animation: shake ? "bitez-shake 0.5s" : undefined,
-              }}
-            >
-              <span
-                className="material-symbols-outlined mr-4"
-                style={{ color: "#8E8E93", fontSize: 22 }}
-              >
-                dialpad
-              </span>
-              <input
-                type="password"
+                type="tel"
                 inputMode="numeric"
-                pattern="[0-9]*"
-                maxLength={4}
-                value={pin}
+                maxLength={10}
+                value={phone}
                 onChange={(e) =>
-                  setPin(e.target.value.replace(/\D/g, "").slice(0, 4))
+                  setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))
                 }
-                placeholder="••••"
+                placeholder="10-digit number"
                 className="flex-1 bg-transparent outline-none border-none font-medium"
                 style={{
-                  fontSize: 20,
-                  letterSpacing: "0.5em",
+                  fontSize: 17,
                   color: "#1D1D1F",
                 }}
                 autoFocus
@@ -183,15 +159,6 @@ const UserLogin = () => {
                 {errorMsg}
               </div>
             )}
-            <div className="text-right pr-1 mt-3">
-              <Link
-                to="/app/forgot-pin"
-                className="font-medium"
-                style={{ color: "#0071E3", fontSize: 14 }}
-              >
-                Forgot PIN?
-              </Link>
-            </div>
           </div>
 
           <button
@@ -203,19 +170,6 @@ const UserLogin = () => {
             {loading ? "Signing in…" : "Sign In"}
           </button>
         </form>
-
-        <div className="mt-16 text-center">
-          <span style={{ fontSize: 15, color: "#86868B" }}>
-            Don't have an account?
-          </span>{" "}
-          <Link
-            to="/app/signup"
-            className="font-bold ml-1"
-            style={{ color: "#0071E3", fontSize: 15 }}
-          >
-            Sign Up
-          </Link>
-        </div>
       </div>
     </main>
   );

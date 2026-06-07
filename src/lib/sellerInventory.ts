@@ -217,3 +217,16 @@ export const preloadInventoryForSellers = async (sellerIds: string[]) => {
   inventoryCache = allItems.sort((a, b) => b.createdAt - a.createdAt);
   notifyListeners();
 };
+
+export const isItemAvailable = (item: SellerInventoryItem): boolean => {
+  if (item.status !== "Active") return false;
+  if (item.availableUntil) {
+    const until = new Date(item.availableUntil).getTime();
+    if (until <= Date.now()) return false;
+  }
+  return true;
+};
+
+export const maxPurchasableQty = (item: SellerInventoryItem): number => {
+  return typeof item.stockLimit === "number" ? item.stockLimit : Infinity;
+};

@@ -13,22 +13,19 @@ const Profile = () => {
   const initial = fullName.charAt(0).toUpperCase();
   const firstName = fullName.split(" ")[0];
   const handleLogout = async () => {
-    await logoutUser();
-    navigate("/app/login", { replace: true });
-  };
-  const [revealed, setRevealed] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [pressTimer, setPressTimer] = useState<number | null>(null);
-  const startPress = () => {
-    const t = window.setTimeout(() => setRevealed(true), 1500);
-    setPressTimer(t);
-  };
-  const endPress = () => {
-    if (pressTimer) {
-      window.clearTimeout(pressTimer);
-      setPressTimer(null);
+    try {
+      await logoutUser();
+    } catch (err) {
+      console.error("Logout auth error:", err);
     }
+    // Clear both session keys you use in Login.tsx
+    localStorage.removeItem("bitez_user_session");
+    localStorage.removeItem("active_session");
+    
+    // Hard reload routes to login, wiping all in-memory React Query cache
+    window.location.href = "/app/login";
   };
+  const [confirming, setConfirming] = useState(false);
   return (
   <UserLayout>
     <div
@@ -42,14 +39,8 @@ const Profile = () => {
         <div className="lg-card p-6">
           <div className="relative z-10 flex items-center gap-4">
             <div
-              onMouseDown={startPress}
-              onMouseUp={endPress}
-              onMouseLeave={endPress}
-              onTouchStart={startPress}
-              onTouchEnd={endPress}
               className="w-14 h-14 rounded-full flex items-center justify-center text-2xl font-bold"
-              style={{ background: "#2563EB", color: "#fff", userSelect: "none", cursor: "pointer" }}
-              aria-label="Hold to reveal account actions"
+              style={{ background: "#2563EB", color: "#fff", userSelect: "none" }}
             >
               {initial}
             </div>
@@ -61,15 +52,21 @@ const Profile = () => {
             </div>
           </div>
         </div>
-        {revealed && !confirming && (
+        <div className="mt-8 w-full">
           <button
             onClick={() => setConfirming(true)}
-            className="mt-10 mx-auto block text-xs underline opacity-60 hover:opacity-100"
-            style={{ color: "#8E8E93" }}
+            className="w-full flex items-center justify-center gap-2 font-bold transition-all duration-200 active:scale-[0.98]"
+            style={{
+              background: "#FEE2E2",
+              color: "#DC2626",
+              padding: "16px",
+              borderRadius: 16,
+            }}
           >
-            Sign out of this device
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>logout</span>
+            Log Out
           </button>
-        )}
+        </div>
         {confirming && (
           <div
             role="dialog"
@@ -86,7 +83,7 @@ const Profile = () => {
               </p>
               <div className="flex gap-3">
                 <button
-                  onClick={() => { setConfirming(false); setRevealed(false); }}
+                  onClick={() => setConfirming(false)}
                   className="flex-1 h-11 rounded-full font-semibold"
                   style={{ background: "#F2F2F7", color: "#1D1D1F" }}
                 >

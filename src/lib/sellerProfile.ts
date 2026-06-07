@@ -13,6 +13,7 @@ export type SellerProfile = {
 };
 
 const PROFILE_STORAGE_KEY = "bitez.seller.profile";
+const CANTEENS_STORAGE_KEY = "bitez.user.canteens";
 
 const defaultProfile: SellerProfile = {
   id: "",
@@ -23,6 +24,24 @@ const defaultProfile: SellerProfile = {
   ifsc: "",
   upiId: "",
   icon: "🍽️",
+};
+
+const profileSubscribers = new Set<() => void>();
+
+export const subscribeProfile = (cb: () => void) => {
+  profileSubscribers.add(cb);
+  return () => profileSubscribers.delete(cb);
+};
+
+export const getRegisteredCanteens = (): SellerProfile[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(CANTEENS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // Ignore storage parse errors
+  }
+  return [];
 };
 
 export const getProfile = (): SellerProfile => {
@@ -100,19 +119,31 @@ export const saveProfileToBackend = async (
   return savedProfile;
 };
 
-export const getRegisteredCanteensFromBackend = async (): Promise<{ id: string; name: string }[]> => {
+export const getRegisteredCanteensFromBackend = async (): Promise<SellerProfile[]> => {
   const db = getFirestore();
   // Fetching all active sellers to be able to map active canteens
   const q = query(collection(db, "sellers"), where("is_active", "==", true));
   const snapshot = await getDocs(q);
   
-  const canteens: { id: string; name: string }[] = [];
+  const canteens: SellerProfile[] = [];
   snapshot.forEach((docSnap) => {
+    const data = docSnap.data();
     canteens.push({
       id: docSnap.id,
-      name: docSnap.data().canteen_name || "Unknown Canteen",
+      canteenName: data.canteen_name || "Unknown Canteen",
+      slogan: data.slogan || "",
+      ownerPhone: data.phone || "",
+      accountNumber: data.bank_account_number || "",
+      ifsc: data.bank_ifsc || "",
+      upiId: data.upi_id || "",
+      icon: data.icon || "🍽️",
     });
   });
   
+  if (typeof window !== "undefined") {
+    localStorage.setItem(CANTEENS_STORAGE_KEY, JSON.stringify(canteens));
+    profileSubscribers.forEach((cb) => cb());
+  }
+
   return canteens;
 };
