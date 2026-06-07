@@ -9,24 +9,29 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import OfflineBanner from "@/components/OfflineBanner";
 import LoadingScreen from "@/components/LoadingScreen";
 import OrbitLoader from "@/components/OrbitLoader";
-import AdminRoute from "./components/guards/AdminRoute.jsx";
-import { applyPwaHeadForPath } from "@/lib/pwaLaunch";
+import { getFirestore, collection, query, documentId, where, getDocs } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
-import { app as firebaseApp } from "@/firebase";
+import SellerRoute from "./components/guards/SellerRoute.jsx";
+import { preloadInventoryForSellers } from "@/lib/sellerInventory";
+import { initInventoryRealtime } from "@/lib/sellerInventory";
+import { loadOrdersFromBackend } from "@/lib/sellerOrders";
+import { getRegisteredCanteensFromBackend } from "@/lib/sellerProfile";
+import { getUserSession } from "@/utils/sessionManager";
+import { pruneCartByCanteens } from "@/lib/userCart";
+import { getCart } from "@/lib/userCart";
+import { applyPwaHeadForPath } from "@/lib/pwaLaunch";
 
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
-const MaLogin = lazy(() => import("./master-admin/pages/Login.tsx"));
-const MaSignup = lazy(() => import("./master-admin/pages/Signup.tsx"));
-const MaOverview = lazy(() => import("./master-admin/pages/Overview.tsx"));
-const MaSellers = lazy(() => import("./master-admin/pages/Sellers.tsx"));
-const MaCreateSeller = lazy(() => import("./master-admin/pages/CreateSeller.tsx"));
-const MaSellerDetail = lazy(() => import("./master-admin/pages/SellerDetail.tsx"));
-const MaUsers = lazy(() => import("./master-admin/pages/Users.tsx"));
-const MaUserDetail = lazy(() => import("./master-admin/pages/UserDetail.tsx"));
-const MaSales = lazy(() => import("./master-admin/pages/Sales.tsx"));
-const MaBehaviour = lazy(() => import("./master-admin/pages/Behaviour.tsx"));
-const MaProducts = lazy(() => import("./master-admin/pages/Products.tsx"));
-const MaAudit = lazy(() => import("./master-admin/pages/Audit.tsx"));
+const SellerDashboard = lazy(() => import("./pages/seller/Dashboard.tsx"));
+const SellerInventory = lazy(() => import("./pages/seller/Inventory.tsx"));
+const SellerMenu = lazy(() => import("./pages/seller/Menu.tsx"));
+const SellerStaff = lazy(() => import("./pages/seller/Staff.tsx"));
+const SellerOffers = lazy(() => import("./pages/seller/Offers.tsx"));
+const SellerSettings = lazy(() => import("./pages/seller/Settings.tsx"));
+const SellerOrders = lazy(() => import("./pages/seller/Orders.tsx"));
+const SalesDashboard = lazy(() => import("./pages/seller/SalesDashboard.tsx"));
+const SalesReports = lazy(() => import("./pages/seller/SalesReports.tsx"));
+const SellerLogin = lazy(() => import("./pages/seller/Login.tsx"));
 
 // Aggressive caching tuned for low-bandwidth campus networks.
 // Data stays "fresh" for 5 min, kept in memory for 24h, and persisted to
@@ -47,6 +52,63 @@ const persister =
     ? createSyncStoragePersister({ storage: window.localStorage, key: "bitez-cache-v2" })
     : undefined;
 
+const AppDataPreloader = () => {
+  useEffect(() => {
+    let alive = true;
+    let stopRealtime = () => {};
+    try {
+      stopRealtime = initInventoryRealtime() || (() => {});
+    } catch (e) {
+      console.warn("Realtime inventory init failed (likely due to Firebase migration):", e);
+    }
+    getRegisteredCanteensFromBackend()
+      .then((canteens) => {
+        if (!alive) return;
+        const ids = canteens.map((c) => c.id);
+        pruneCartByCanteens(ids);
+        preloadInventoryForSellers(ids);
+      })
+      .catch(() => null);
+    const userId = getUserSession()?.id;
+    if (userId) loadOrdersFromBackend(null, userId).catch(() => null);
+    // Validate every item in cart against live product table on app mount.
+    // Removes any line whose product was deactivated since last visit so a
+    // stale cart can never silently turn into a ghost order.
+    (async () => {
+      const cart = getCart();
+      if (!cart || cart.length === 0) return;
+      const ids = cart.map((c) => c.itemId);
+      let data: any[] | null = null;
+      let error = null;
+      try {
+        const db = getFirestore();
+        data = [];
+        for (let i = 0; i < ids.length; i += 30) {
+          const chunk = ids.slice(i, i + 30);
+          const q = query(collection(db, "inventory"), where(documentId(), "in", chunk));
+          const snapshot = await getDocs(q);
+          snapshot.forEach((doc) => {
+            data!.push({ id: doc.id, is_active: doc.data().status === "Active" || doc.data().is_active });
+          });
+        }
+      } catch (err) {
+        error = err;
+      }
+      if (error || !data) return;
+      const validIds = new Set(data.filter((p) => p.is_active).map((p) => p.id));
+      const cleaned = cart.filter((c) => validIds.has(c.itemId));
+      if (cleaned.length !== cart.length) {
+        // Re-write cart via the canonical helper to fire change events.
+        const { clearCart, addToCart } = await import("@/lib/userCart");
+        clearCart();
+        cleaned.forEach((c) => addToCart({ ...c }, c.qty));
+      }
+    })().catch(() => null);
+    return () => { alive = false; stopRealtime(); };
+  }, []);
+  return null;
+};
+
 const PwaRouteSync = () => {
   const location = useLocation();
   useEffect(() => {
@@ -65,13 +127,7 @@ const LaunchGate = () => {
     const init = async () => {
       try {
         await Promise.all([
-          new Promise((resolve) => {
-            const auth = getAuth(firebaseApp);
-            const unsubscribe = auth.onAuthStateChanged(() => {
-              resolve(true);
-              unsubscribe();
-            });
-          }),
+          getAuth().authStateReady().catch(() => null) || Promise.resolve(),
           new Promise((r) => setTimeout(r, 1200)),
         ]);
       } finally {
@@ -105,13 +161,9 @@ const App = () => (
       <Toaster />
       <Sonner />
       <OfflineBanner />
+      <AppDataPreloader />
       <LaunchGate />
-      <BrowserRouter
-        future={{
-          v7_startTransition: true,
-          v7_relativeSplatPath: true,
-        }}
-      >
+      <BrowserRouter>
         <PwaRouteSync />
         <Suspense
           fallback={
@@ -132,25 +184,23 @@ const App = () => (
           }
         >
           <Routes>
-          <Route path="/" element={<Navigate to="/master-admin/login" replace />} />
+            <Route path="/" element={<Navigate to="/seller/login" replace />} />
 
-          {/* MASTER ADMIN */}
-          <Route path="/master-admin/login" element={<MaLogin />} />
-          <Route path="/master-admin/signup" element={<MaSignup />} />
-          <Route path="/master-admin/overview" element={<AdminRoute><MaOverview /></AdminRoute>} />
-          <Route path="/master-admin/sellers" element={<AdminRoute><MaSellers /></AdminRoute>} />
-          <Route path="/master-admin/sellers/new" element={<AdminRoute><MaCreateSeller /></AdminRoute>} />
-          <Route path="/master-admin/sellers/:id" element={<AdminRoute><MaSellerDetail /></AdminRoute>} />
-          <Route path="/master-admin/users" element={<AdminRoute><MaUsers /></AdminRoute>} />
-          <Route path="/master-admin/users/:id" element={<AdminRoute><MaUserDetail /></AdminRoute>} />
-          <Route path="/master-admin/sales" element={<AdminRoute><MaSales /></AdminRoute>} />
-          <Route path="/master-admin/behaviour" element={<AdminRoute><MaBehaviour /></AdminRoute>} />
-          <Route path="/master-admin/products" element={<AdminRoute><MaProducts /></AdminRoute>} />
-          <Route path="/master-admin/audit" element={<AdminRoute><MaAudit /></AdminRoute>} />
-          <Route path="/master-admin" element={<Navigate to="/master-admin/overview" replace />} />
+          {/* SELLER APP */}
+          <Route path="/seller/login" element={<SellerLogin />} />
+          <Route path="/seller/dashboard" element={<SellerRoute><SellerDashboard /></SellerRoute>} />
+          <Route path="/seller/inventory" element={<SellerRoute><SellerInventory /></SellerRoute>} />
+          <Route path="/seller/menu" element={<SellerRoute><SellerMenu /></SellerRoute>} />
+          <Route path="/seller/staff" element={<SellerRoute><SellerStaff /></SellerRoute>} />
+          <Route path="/seller/offers" element={<SellerRoute><SellerOffers /></SellerRoute>} />
+          <Route path="/seller/settings" element={<SellerRoute><SellerSettings /></SellerRoute>} />
+          <Route path="/seller/orders" element={<SellerRoute><SellerOrders /></SellerRoute>} />
+          <Route path="/seller/sales" element={<SellerRoute><SalesDashboard /></SellerRoute>} />
+          <Route path="/seller/sales/reports" element={<SellerRoute><SalesReports /></SellerRoute>} />
+          <Route path="/seller" element={<Navigate to="/seller/dashboard" replace />} />
 
           <Route path="/404" element={<NotFound />} />
-          <Route path="*" element={<Navigate to="/master-admin/login" replace />} />
+            <Route path="*" element={<Navigate to="/seller/login" replace />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

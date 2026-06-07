@@ -51,7 +51,12 @@ function read(): SellerOffer[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SellerOffer[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((o: any) => ({
+      ...o,
+      itemIds: Array.isArray(o.itemIds) ? o.itemIds : [],
+      discountPct: Number(o.discountPct) || 0,
+    })) as SellerOffer[];
   } catch {
     return [];
   }
@@ -81,7 +86,7 @@ function toDbRow(offer: SellerOffer, keepId = false) {
     start_date: offer.startDate || null,
     end_date: offer.endDate || null,
     condition: offer.condition,
-    item_ids: offer.itemIds,
+    item_ids: offer.itemIds || [],
     is_active: true,
   };
 }
@@ -96,8 +101,8 @@ export async function migrateCachedOffersToBackend(sellerId?: string | null): Pr
   if (cached.length === 0) return;
   const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const rows: SellerOffer[] = [];
-  const withIds = cached.filter((o) => uuidLike.test(o.id));
-  const withoutIds = cached.filter((o) => !uuidLike.test(o.id));
+  const withIds = cached.filter((o) => o.id && uuidLike.test(o.id));
+  const withoutIds = cached.filter((o) => !o.id || !uuidLike.test(o.id));
   if (withIds.length > 0) {
     const { data, error } = await db
       .from("seller_offers")
@@ -196,17 +201,28 @@ export function subscribeOffers(cb: () => void): () => void {
   const onStorage = (e: StorageEvent) => {
     if (e.key === STORAGE_KEY) cb();
   };
-  const channel = db
-    .channel("seller-offers-live")
-    .on("postgres_changes", { event: "*", schema: "public", table: "seller_offers" }, () => {
-      loadOffersFromBackend().then(cb).catch(() => cb());
-    })
-    .subscribe();
+
+  let channel: any = null;
+  try {
+    if (typeof db.channel === "function") {
+      channel = db
+        .channel("seller-offers-live")
+        .on("postgres_changes", { event: "*", schema: "public", table: "seller_offers" }, () => {
+          loadOffersFromBackend().then(cb).catch(() => cb());
+        })
+        .subscribe();
+    }
+  } catch (e) {
+    console.warn("Realtime offers init failed:", e);
+  }
+
   window.addEventListener(EVENT_NAME, onLocal as EventListener);
   window.addEventListener("storage", onStorage);
   return () => {
     window.removeEventListener(EVENT_NAME, onLocal as EventListener);
     window.removeEventListener("storage", onStorage);
-    db.removeChannel(channel);
+    if (channel && typeof db.removeChannel === "function") {
+      db.removeChannel(channel);
+    }
   };
 }

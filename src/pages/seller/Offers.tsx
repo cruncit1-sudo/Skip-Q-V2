@@ -12,7 +12,7 @@ import {
   updateOffer,
   type SellerOffer,
 } from "@/lib/sellerOffers";
-import { getSellerSession } from "@/lib/sellerAuth";
+import { getSellerSession } from "@/utils/sessionManager";
 
 type OfferType = "general" | "inventory";
 
@@ -23,21 +23,22 @@ type InventoryItem = {
   group: string;
 };
 
-const toInventoryItem = (it: SellerInventoryItem): InventoryItem => ({
-  id: it.id,
-  icon: it.icon,
-  name: it.name,
-  group: it.category,
+const toInventoryItem = (it: any): InventoryItem => ({
+  id: it?.id || Math.random().toString(),
+  icon: it?.icon || "🍽️",
+  name: it?.name || "Unknown Item",
+  group: it?.category || "Uncategorized",
 });
 
 const SellerOffers = () => {
+  const sellerId = getSellerSession()?.id ?? null;
   const [step, setStep] = useState<"select" | "details">("select");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [offerType, setOfferType] = useState<OfferType>("general");
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [inventory, setInventory] = useState<SellerInventoryItem[]>(() => getInventory());
-  const [offers, setOffers] = useState<SellerOffer[]>(() => getOffers());
+  const [inventory, setInventory] = useState<SellerInventoryItem[]>(() => getInventory(sellerId) || []);
+  const [offers, setOffers] = useState<SellerOffer[]>(() => getOffers() || []);
   // Form fields (lifted to parent so submit can persist)
   const [name, setName] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -45,28 +46,28 @@ const SellerOffers = () => {
   const [discount, setDiscount] = useState("");
   const [condition, setCondition] = useState("");
 
-  useEffect(() => subscribeInventory(() => setInventory(getInventory())), []);
-  useEffect(() => subscribeOffers(() => setOffers(getOffers())), []);
+  useEffect(() => subscribeInventory(() => setInventory(getInventory(sellerId) || [])), [sellerId]);
+  useEffect(() => subscribeOffers(() => setOffers(getOffers() || [])), []);
 
-  const sellerId = getSellerSession()?.id ?? null;
   useEffect(() => {
     migrateCachedOffersToBackend(sellerId)
       .catch(() => null)
-      .finally(() => loadOffersFromBackend(sellerId).then(() => setOffers(getOffers())).catch(() => null));
+      .finally(() => loadOffersFromBackend(sellerId).then(() => setOffers(getOffers() || [])).catch(() => null));
   }, [sellerId]);
   const myOffers = useMemo(
-    () => offers.filter((o) => o.sellerId === sellerId),
+    () => (Array.isArray(offers) ? offers : []).filter((o) => o?.sellerId === sellerId),
     [offers, sellerId],
   );
 
   const filteredItems = useMemo(() => {
-    const all = inventory.map(toInventoryItem);
-    const normalized = query.trim().toLowerCase();
+    const safeInventory = Array.isArray(inventory) ? inventory : [];
+    const all = safeInventory.map(toInventoryItem);
+    const normalized = (query || "").trim().toLowerCase();
     if (!normalized) return all;
     return all.filter(
       (item) =>
-        item.name.toLowerCase().includes(normalized) ||
-        item.group.toLowerCase().includes(normalized)
+        (item.name || "").toLowerCase().includes(normalized) ||
+        (item.group || "").toLowerCase().includes(normalized)
     );
   }, [query, inventory]);
 
@@ -153,7 +154,7 @@ const SellerOffers = () => {
     setEndDate(o.endDate);
     setDiscount(String(o.discountPct));
     setCondition(o.condition ?? "");
-    setSelectedItems(o.itemIds ?? []);
+    setSelectedItems(Array.isArray(o.itemIds) ? o.itemIds : []);
     setStep("details");
   };
 
@@ -167,9 +168,10 @@ const SellerOffers = () => {
   };
 
   const toggleItem = (id: string) => {
-    setSelectedItems((prev) =>
-      prev.includes(id) ? prev.filter((itemId) => itemId !== id) : [...prev, id]
-    );
+    setSelectedItems((prev) => {
+      const safePrev = Array.isArray(prev) ? prev : [];
+      return safePrev.includes(id) ? safePrev.filter((itemId) => itemId !== id) : [...safePrev, id];
+    });
   };
 
   if (step === "details" && offerType === "general") {
@@ -306,7 +308,7 @@ const SellerOffers = () => {
                       </span>
                     </div>
                     <p className="mt-1 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      {o.kind === "general" ? "All items" : `${o.itemIds.length} item${o.itemIds.length === 1 ? "" : "s"}`}
+                    {o.kind === "general" ? "All items" : `${o.itemIds?.length || 0} item${o.itemIds?.length === 1 ? "" : "s"}`}
                       {o.startDate || o.endDate ? ` • ${o.startDate || "—"} → ${o.endDate || "—"}` : ""}
                     </p>
                   </div>
@@ -539,7 +541,7 @@ const InventoryOfferForm = ({
             </p>
           )}
           {items.map((item) => {
-            const selected = selectedItems.includes(item.id);
+            const selected = (Array.isArray(selectedItems) ? selectedItems : []).includes(item.id);
             return (
               <button
                 type="button"

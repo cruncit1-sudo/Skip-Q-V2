@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
+import { getFirestore } from "firebase/firestore";
 
 export const firebaseConfig = {
   apiKey: "AIzaSyCH6FjwX0FwWEAs9QU5SwSRfXzmg9p582E",
@@ -14,10 +15,11 @@ export const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
+const db = getFirestore(app);
 
 if (app) {
   console.log("🔥 Firebase is successfully connected to the app!");
   console.log("Firebase Project:", app.options.projectId);
 }
 
-export { app, analytics };
+export { app, analytics, db };

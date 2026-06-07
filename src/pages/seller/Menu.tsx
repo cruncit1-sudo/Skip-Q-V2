@@ -37,13 +37,13 @@ const SellerMenu = () => {
 
   // Set Limit dialog state
   const [limiting, setLimiting] = useState<SellerInventoryItem | null>(null);
-  const [lMode, setLMode] = useState<"qty" | "time">("qty");
+  const [lMode, setLMode] = useState<"qty" | "time" | "unlimited">("qty");
   const [lQty, setLQty] = useState("");
   const [lUntil, setLUntil] = useState("");
 
   const openLimit = (item: SellerInventoryItem) => {
     setLimiting(item);
-    setLMode(item.availableUntil ? "time" : "qty");
+    setLMode(item.stockLimit == null && !item.availableUntil ? "unlimited" : item.availableUntil ? "time" : "qty");
     setLQty(item.stockLimit != null ? String(item.stockLimit) : "");
     setLUntil(item.availableUntil ? toLocalInput(item.availableUntil) : "");
   };
@@ -57,21 +57,18 @@ const SellerMenu = () => {
       setInventoryLimit(limiting.id, { stockLimit: Math.floor(n), availableUntil: null })
         .then(() => { toast.success(`Limit set: ${Math.floor(n)} units`); closeLimit(); })
         .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set limit"));
-    } else {
+    } else if (lMode === "time") {
       if (!lUntil) return toast.error("Pick an available-until time");
       const iso = new Date(lUntil).toISOString();
       if (new Date(iso).getTime() <= Date.now()) return toast.error("Time must be in the future");
       setInventoryLimit(limiting.id, { availableUntil: iso, stockLimit: null })
         .then(() => { toast.success("Available-until set"); closeLimit(); })
         .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set limit"));
+    } else if (lMode === "unlimited") {
+      setInventoryLimit(limiting.id, { stockLimit: null, availableUntil: null })
+        .then(() => { toast.success("Limit cleared (Unlimited)"); closeLimit(); })
+        .catch((e) => toast.error(e instanceof Error ? e.message : "Could not clear limit"));
     }
-  };
-
-  const clearLimit = () => {
-    if (!limiting) return;
-    setInventoryLimit(limiting.id, { stockLimit: null, availableUntil: null })
-      .then(() => { toast.success("Limit cleared"); closeLimit(); })
-      .catch((e) => toast.error(e instanceof Error ? e.message : "Could not clear limit"));
   };
 
   const openEdit = (item: SellerInventoryItem) => {
@@ -470,11 +467,11 @@ const SellerMenu = () => {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-1 rounded-full bg-secondary/60 p-1">
+              <div className="grid grid-cols-3 gap-1 rounded-full bg-secondary/60 p-1">
                 <button
                   type="button"
                   onClick={() => setLMode("qty")}
-                  className={`rounded-full py-2 text-xs font-bold uppercase tracking-wider transition ${
+                  className={`rounded-full py-2 text-[10px] font-bold uppercase tracking-wider transition ${
                     lMode === "qty" ? "bg-primary/20 text-primary" : "text-muted-foreground"
                   }`}
                 >
@@ -482,16 +479,25 @@ const SellerMenu = () => {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setLMode("unlimited")}
+                  className={`rounded-full py-2 text-[10px] font-bold uppercase tracking-wider transition ${
+                    lMode === "unlimited" ? "bg-primary/20 text-primary" : "text-muted-foreground"
+                  }`}
+                >
+                  Unlimited
+                </button>
+                <button
+                  type="button"
                   onClick={() => setLMode("time")}
-                  className={`rounded-full py-2 text-xs font-bold uppercase tracking-wider transition ${
+                  className={`rounded-full py-2 text-[10px] font-bold uppercase tracking-wider transition ${
                     lMode === "time" ? "bg-primary/20 text-primary" : "text-muted-foreground"
                   }`}
                 >
-                  Available Time
+                  Time
                 </button>
               </div>
 
-              {lMode === "qty" ? (
+              {lMode === "qty" && (
                 <label className="mt-5 block">
                   <span className="text-xs font-semibold tracking-[0.18em] text-muted-foreground">LIMIT QUANTITY</span>
                   <input
@@ -504,10 +510,12 @@ const SellerMenu = () => {
                     className="mt-2 w-full rounded-full bg-secondary/70 px-5 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/60"
                   />
                   <p className="mt-2 px-2 text-[11px] text-muted-foreground">
-                    Item auto-hides once this quantity is sold.
+                    Item auto-hides once this quantity is sold. (Countable)
                   </p>
                 </label>
-              ) : (
+              )}
+              
+              {lMode === "time" && (
                 <label className="mt-5 block">
                   <span className="text-xs font-semibold tracking-[0.18em] text-muted-foreground">AVAILABLE UNTIL</span>
                   <input
@@ -522,13 +530,22 @@ const SellerMenu = () => {
                 </label>
               )}
 
+              {lMode === "unlimited" && (
+                <div className="mt-5 block text-center p-4 rounded-2xl bg-secondary/40 border border-dashed border-border">
+                  <p className="text-sm font-semibold text-foreground">Unlimited Stock</p>
+                  <p className="mt-2 px-2 text-[11px] text-muted-foreground">
+                    This item is uncountable and will remain available until you manually deactivate it.
+                  </p>
+                </div>
+              )}
+
               <div className="mt-6 flex gap-3">
                 <button
                   type="button"
-                  onClick={clearLimit}
+                  onClick={closeLimit}
                   className="flex-1 rounded-full bg-secondary py-3 text-sm font-semibold text-foreground hover:bg-secondary/80"
                 >
-                  Clear
+                  Cancel
                 </button>
                 <button
                   type="button"

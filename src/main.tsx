@@ -3,6 +3,9 @@ import App from "./App.tsx";
 import "./index.css";
 import { applyPwaHeadForPath, getAdminStandaloneRedirect } from "@/lib/pwaLaunch";
 
+// Initialize Firebase before the rest of the app loads
+import "./firebase";
+
 const installRouteManifest = () => {
   applyPwaHeadForPath();
 };

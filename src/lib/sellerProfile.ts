@@ -1,197 +1,118 @@
-import { supabase } from "@/integrations/supabase/client";
-import { queryWithTimeout } from "@/utils/networkStatus";
+import { getFirestore, doc, getDoc, updateDoc, collection, getDocs, query, where } from "firebase/firestore";
+import { getSellerSession } from "@/utils/sessionManager";
 
 export type SellerProfile = {
   id: string;
   canteenName: string;
   slogan: string;
   ownerPhone: string;
-  icon: string;
   accountNumber: string;
   ifsc: string;
   upiId: string;
+  icon: string;
 };
 
-const STORAGE_KEY = "bitez.seller.profile";
-const CANTEENS_STORAGE_KEY = "bitez:shared:canteens:v1";
-const EVENT = "bitez:seller:profile:change";
-const DEFAULT_ID = "main";
-const SESSION_KEY = "bitez_seller_session";
+const PROFILE_STORAGE_KEY = "bitez.seller.profile";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = supabase as any;
-
-const empty: SellerProfile = {
-  id: DEFAULT_ID,
+const defaultProfile: SellerProfile = {
+  id: "",
   canteenName: "",
   slogan: "",
   ownerPhone: "",
-  icon: "🍽️",
   accountNumber: "",
   ifsc: "",
   upiId: "",
+  icon: "🍽️",
 };
 
-export function getProfile(): SellerProfile {
-  if (typeof window === "undefined") return empty;
+export const getProfile = (): SellerProfile => {
+  if (typeof window === "undefined") return defaultProfile;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return empty;
-    return { ...empty, ...(JSON.parse(raw) as Partial<SellerProfile>), id: DEFAULT_ID };
+    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (raw) return { ...defaultProfile, ...JSON.parse(raw) };
   } catch {
-    return empty;
+    // Ignore storage parse errors
   }
-}
+  return defaultProfile;
+};
 
-export function saveProfile(p: Omit<SellerProfile, "id">): SellerProfile {
-  const next: SellerProfile = { ...p, id: DEFAULT_ID };
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent(EVENT));
-  } catch {
-    /* ignore */
+export const loadCurrentSellerProfile = async (): Promise<SellerProfile> => {
+  const session = getSellerSession();
+  if (!session?.id) throw new Error("No active seller session");
+
+  const db = getFirestore();
+  const docRef = doc(db, "sellers", session.id);
+  const snapshot = await getDoc(docRef);
+
+  if (!snapshot.exists()) {
+    throw new Error("Seller profile not found");
   }
-  return next;
-}
 
-export function isProfileComplete(p: SellerProfile): boolean {
-  return Boolean(
-    p.canteenName.trim() &&
-      p.slogan.trim() &&
-      p.ownerPhone.trim() &&
-      p.accountNumber.trim() &&
-      p.ifsc.trim() &&
-      p.upiId.trim(),
-  );
-}
-
-export function getRegisteredCanteens(): SellerProfile[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(CANTEENS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SellerProfile[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeProfile(p: SellerProfile) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-  window.dispatchEvent(new CustomEvent(EVENT));
-}
-
-function writeCanteens(rows: SellerProfile[]) {
-  if (typeof window === "undefined") return;
-  try {
-    const prev = window.localStorage.getItem(CANTEENS_STORAGE_KEY);
-    const next = JSON.stringify(rows);
-    if (prev === next) return; // no-op: avoids re-render / re-fetch loops
-    window.localStorage.setItem(CANTEENS_STORAGE_KEY, next);
-  } catch {
-    /* ignore */
-  }
-  // NOTE: intentionally do NOT dispatch the profile-change event here.
-  // That event is for the seller's own profile edits; firing it on every
-  // canteen list refresh causes an infinite fetch loop in subscribers
-  // (Home re-fetches → writes → event → re-fetches → ...).
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fromSeller(row: any): SellerProfile {
-  const rawIcon = String(row.canteen_type ?? "").trim();
-  const icon = /^\p{Extended_Pictographic}/u.test(rawIcon) ? rawIcon : "🍽️";
-  return {
-    id: row.id,
-    canteenName: row.canteen_name ?? "Canteen",
-    slogan: row.canteen_location ?? row.canteen_type ?? "Open now",
-    ownerPhone: row.phone ?? "",
-    icon,
-    accountNumber: row.bank_account_number ?? "",
-    ifsc: row.bank_ifsc ?? "",
-    upiId: row.upi_id ?? "",
+  const data = snapshot.data();
+  const profile: SellerProfile = {
+    id: snapshot.id,
+    canteenName: data.canteen_name || "",
+    slogan: data.slogan || "",
+    ownerPhone: data.phone || "",
+    accountNumber: data.bank_account_number || "",
+    ifsc: data.bank_ifsc || "",
+    upiId: data.upi_id || "",
+    icon: data.icon || "🍽️",
   };
-}
 
-export async function getRegisteredCanteensFromBackend(): Promise<SellerProfile[]> {
-  // Public canteen list — only non-sensitive columns are readable by anon.
-  // Bank/UPI/phone are intentionally not exposed to user-facing canteen cards.
-  const { data, error } = await queryWithTimeout(
-    db
-      .from("sellers")
-      .select("id, canteen_name, canteen_location, canteen_type, is_active, is_suspended")
-      .eq("is_active", true)
-      .eq("is_suspended", false)
-      .order("created_at", { ascending: false }),
-    5000,
-  );
-  if (error) {
-    return getRegisteredCanteens();
+  if (typeof window !== "undefined") {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+    // Trigger storage event so header updates dynamically (e.g. for the avatar icon)
+    window.dispatchEvent(new Event("storage"));
   }
-  const rows = (data ?? []).map(fromSeller);
-  writeCanteens(rows);
-  return rows;
-}
 
-export async function loadCurrentSellerProfile(): Promise<SellerProfile> {
-  if (typeof window === "undefined") return empty;
-  const raw = window.localStorage.getItem(SESSION_KEY);
-  const session = raw ? (JSON.parse(raw) as { id?: string }) : null;
-  if (!session?.id) return empty;
-  // Sensitive columns (phone, bank, UPI) require service role; go via edge fn.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sb = db as any;
-  const { data: res, error } = await sb.functions.invoke("seller-self", {
-    body: { seller_id: session.id, op: "get" },
-  });
-  if (error) throw new Error(error.message);
-  if (res?.error) throw new Error(res.error);
-  if (!res?.row) return empty;
-  const profile = fromSeller(res.row);
-  writeProfile(profile);
   return profile;
-}
+};
 
-export async function saveProfileToBackend(p: Omit<SellerProfile, "id">): Promise<SellerProfile> {
-  if (typeof window === "undefined") return { ...p, id: DEFAULT_ID };
-  const raw = window.localStorage.getItem(SESSION_KEY);
-  const session = raw ? (JSON.parse(raw) as { id?: string }) : null;
-  if (!session?.id) return saveProfile(p);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sb = db as any;
-  const { data: res, error } = await sb.functions.invoke("seller-self", {
-    body: {
-      seller_id: session.id,
-      op: "update",
-      patch: {
-        canteen_name: p.canteenName,
-        canteen_location: p.slogan,
-        canteen_type: p.icon,
-        phone: p.ownerPhone,
-        bank_account_number: p.accountNumber,
-        bank_ifsc: p.ifsc,
-        upi_id: p.upiId,
-      },
-    },
+export const saveProfileToBackend = async (
+  profile: Omit<SellerProfile, "id">
+): Promise<SellerProfile> => {
+  const session = getSellerSession();
+  if (!session?.id) throw new Error("No active seller session");
+
+  const db = getFirestore();
+  const docRef = doc(db, "sellers", session.id);
+
+  const updates = {
+    canteen_name: profile.canteenName,
+    slogan: profile.slogan,
+    phone: profile.ownerPhone,
+    bank_account_number: profile.accountNumber,
+    bank_ifsc: profile.ifsc,
+    upi_id: profile.upiId,
+    icon: profile.icon,
+  };
+
+  await updateDoc(docRef, updates);
+
+  const savedProfile = { ...profile, id: session.id };
+  
+  if (typeof window !== "undefined") {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(savedProfile));
+    window.dispatchEvent(new Event("storage"));
+  }
+
+  return savedProfile;
+};
+
+export const getRegisteredCanteensFromBackend = async (): Promise<{ id: string; name: string }[]> => {
+  const db = getFirestore();
+  // Fetching all active sellers to be able to map active canteens
+  const q = query(collection(db, "sellers"), where("is_active", "==", true));
+  const snapshot = await getDocs(q);
+  
+  const canteens: { id: string; name: string }[] = [];
+  snapshot.forEach((docSnap) => {
+    canteens.push({
+      id: docSnap.id,
+      name: docSnap.data().canteen_name || "Unknown Canteen",
+    });
   });
-  if (error) throw new Error(error.message);
-  if (res?.error) throw new Error(res.error);
-  const next = fromSeller(res.row);
-  writeProfile(next);
-  return next;
-}
-
-export function subscribeProfile(cb: () => void): () => void {
-  const onLocal = () => cb();
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY) cb();
-  };
-  window.addEventListener(EVENT, onLocal);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    window.removeEventListener(EVENT, onLocal);
-    window.removeEventListener("storage", onStorage);
-  };
-}
+  
+  return canteens;
+};

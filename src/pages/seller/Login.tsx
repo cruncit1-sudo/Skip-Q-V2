@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { loginSeller } from "@/lib/sellerAuth";
 import { getSellerSession, saveSellerSession } from "@/utils/sessionManager";
+import { getAuth, signInWithEmailAndPassword } from "firebase/auth";
+import { getFirestore, collection, query, where, getDocs } from "firebase/firestore";
 
 const SellerLogin = () => {
   const navigate = useNavigate();
@@ -27,18 +28,42 @@ const SellerLogin = () => {
     }
     setLoading(true);
     try {
-      const s = await loginSeller(identifier, password);
+      const auth = getAuth();
+      const db = getFirestore();
+      
+      // 1. Firebase Authentication
+      const userCred = await signInWithEmailAndPassword(auth, identifier, password);
+      const user = userCred.user;
+
+      // 2. Fetch seller profile from Firestore (Assuming a 'sellers' collection)
+      let canteenName = "My Canteen";
+      let sellerName = user.displayName || "Seller";
+      
+      const q = query(collection(db, "sellers"), where("email", "==", identifier));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const data = snapshot.docs[0].data();
+        canteenName = data.canteenName || data.canteen_name || canteenName;
+        sellerName = data.name || sellerName;
+      }
+
       saveSellerSession({
-        id: s.id,
-        name: s.name,
-        email: s.email,
-        username: s.username,
-        canteenName: s.canteen_name,
+        id: user.uid,
+        name: sellerName,
+        email: user.email || identifier,
+        username: identifier,
+        canteenName: canteenName,
       });
+
       toast.success("Welcome back");
       navigate("/seller/dashboard", { replace: true });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Login failed");
+    } catch (err: any) {
+      console.error("Firebase Login Error:", err);
+      let errMsg = "Login failed";
+      if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password" || err.code === "auth/user-not-found") {
+        errMsg = "Invalid email or password";
+      }
+      toast.error(errMsg);
     } finally {
       setLoading(false);
     }
@@ -63,14 +88,14 @@ const SellerLogin = () => {
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">Username or Email</label>
+          <label className="text-sm font-medium">Email ID</label>
           <input
             autoFocus
             autoComplete="username"
             className="flex h-11 w-full rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
-            placeholder="e.g. canteen_name"
+            placeholder="e.g. seller@canteen.com"
           />
         </div>
 
@@ -103,7 +128,7 @@ const SellerLogin = () => {
           disabled={loading}
           className="w-full h-11 rounded-xl bg-gradient-primary font-semibold text-primary-foreground shadow-glow disabled:opacity-60"
         >
-          {loading ? "Signing in…" : "Sign in"}
+        {loading ? "Logging in…" : "Log in"}
         </button>
 
         <p className="text-center text-xs text-muted-foreground">

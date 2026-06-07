@@ -19,13 +19,13 @@ const SellerStaff = () => {
 
   useEffect(() => subscribeStaff(() => setStaff(getStaff())), []);
   useEffect(() => {
-    // Keep the suggested token id in sync with the live list when not edited.
-    setStaffId((current) => (current.startsWith("token_") ? nextStaffToken() : current));
+    // Update suggested staff ID when list changes (if they haven't typed a custom one)
+    setStaffId(nextStaffToken());
   }, [staff.length]);
 
   const activeCount = useMemo(() => staff.length, [staff.length]);
 
-  const createStaff = (event: FormEvent<HTMLFormElement>) => {
+  const createStaff = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedName = name.trim();
     const trimmedStaffId = staffId.trim();
@@ -40,11 +40,14 @@ const SellerStaff = () => {
       return;
     }
 
-    addStaff({ name: trimmedName, staffId: trimmedStaffId, password });
-    setName("");
-    setPassword("");
-    setStaffId(nextStaffToken());
-    toast.success("Staff created");
+    try {
+      await addStaff({ name: trimmedName, staffId: trimmedStaffId, password });
+      setName("");
+      setPassword("");
+      toast.success("Staff created");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create staff");
+    }
   };
 
   const removeStaff = (id: string) => {
@@ -98,7 +101,7 @@ const SellerStaff = () => {
               placeholder="Create staff ID"
               className="min-w-0 flex-1 border-0 bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground/70 outline-none"
             />
-            <span className="ml-3 shrink-0 text-xs font-extrabold text-muted-foreground">token_01</span>
+            <span className="ml-3 shrink-0 text-[10px] font-extrabold uppercase tracking-wider text-primary/70">Auto-suggested</span>
           </div>
 
           <label className="mt-5 block text-xs font-extrabold uppercase tracking-wide text-muted-foreground">
