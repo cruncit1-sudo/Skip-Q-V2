@@ -1,5 +1,15 @@
-import { supabase } from "@/integrations/supabase/client";
-import { queryWithTimeout } from "@/utils/networkStatus";
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  collectionGroup,
+} from "firebase/firestore";
+import { getSellerSession } from "@/utils/sessionManager";
 
 // Shared store for seller-created offers. Backend is the source of truth so
 // offers created by sellers are visible to users on every device/session.
@@ -21,29 +31,7 @@ export type SellerOffer = {
 
 const STORAGE_KEY = "bitez:seller:offers";
 const EVENT_NAME = "bitez:seller:offers:change";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = supabase as any;
-
-function normalizeKind(value: unknown): OfferKind {
-  return value === "inventory" ? "inventory" : "general";
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function fromRow(row: any): SellerOffer {
-  return {
-    id: String(row.id),
-    sellerId: row.seller_id ?? null,
-    kind: normalizeKind(row.kind),
-    name: row.name ?? "Offer",
-    discountPct: Number(row.discount_pct ?? 0),
-    startDate: row.start_date ?? "",
-    endDate: row.end_date ?? "",
-    condition: row.condition ?? "",
-    itemIds: Array.isArray(row.item_ids) ? row.item_ids : [],
-    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-  };
-}
+let realtimeUnsub: (() => void) | null = null;
 
 function read(): SellerOffer[] {
   if (typeof window === "undefined") return [];
@@ -76,21 +64,6 @@ function upsertCache(incoming: SellerOffer[], sellerId?: string | null) {
   write(Array.from(nextById.values()));
 }
 
-function toDbRow(offer: SellerOffer, keepId = false) {
-  return {
-    ...(keepId ? { id: offer.id } : {}),
-    seller_id: offer.sellerId,
-    kind: offer.kind,
-    name: offer.name,
-    discount_pct: offer.discountPct,
-    start_date: offer.startDate || null,
-    end_date: offer.endDate || null,
-    condition: offer.condition,
-    item_ids: offer.itemIds || [],
-    is_active: true,
-  };
-}
-
 export function getOffers(): SellerOffer[] {
   return read().sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -99,42 +72,53 @@ export async function migrateCachedOffersToBackend(sellerId?: string | null): Pr
   if (!sellerId) return;
   const cached = read().filter((o) => o.sellerId === sellerId);
   if (cached.length === 0) return;
-  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  const rows: SellerOffer[] = [];
-  const withIds = cached.filter((o) => o.id && uuidLike.test(o.id));
-  const withoutIds = cached.filter((o) => !o.id || !uuidLike.test(o.id));
-  if (withIds.length > 0) {
-    const { data, error } = await db
-      .from("seller_offers")
-      .upsert(withIds.map((offer) => toDbRow(offer, true)), { onConflict: "id" })
-      .select("id, seller_id, kind, name, discount_pct, start_date, end_date, condition, item_ids, created_at");
-    if (error) throw new Error(error.message);
-    rows.push(...((data ?? []).map(fromRow)));
+  
+  const db = getFirestore();
+  const offersRef = collection(db, "sellers", sellerId, "offers");
+  
+  for (const offer of cached) {
+    if (!offer.id || offer.id.startsWith("local-") || !offer.id.includes("-")) {
+      const newDoc = doc(offersRef);
+      await setDoc(newDoc, { ...offer, id: newDoc.id });
+    } else {
+      const existingDoc = doc(offersRef, offer.id);
+      await setDoc(existingDoc, offer, { merge: true });
+    }
   }
-  if (withoutIds.length > 0) {
-    const { data, error } = await db
-      .from("seller_offers")
-      .insert(withoutIds.map((offer) => toDbRow(offer)))
-      .select("id, seller_id, kind, name, discount_pct, start_date, end_date, condition, item_ids, created_at");
-    if (error) throw new Error(error.message);
-    rows.push(...((data ?? []).map(fromRow)));
-  }
-  if (rows.length > 0) upsertCache(rows, sellerId);
 }
 
 export async function loadOffersFromBackend(sellerId?: string | null): Promise<SellerOffer[]> {
-  let query = db
-    .from("seller_offers")
-    .select("id, seller_id, kind, name, discount_pct, start_date, end_date, condition, item_ids, created_at")
-    .eq("is_active", true)
-    .order("created_at", { ascending: false });
-  if (sellerId) query = query.eq("seller_id", sellerId);
+  const db = getFirestore();
+  let snapshot;
+  try {
+    if (sellerId) {
+      snapshot = await getDocs(collection(db, "sellers", sellerId, "offers"));
+    } else {
+      snapshot = await getDocs(collectionGroup(db, "offers"));
+    }
+    
+    const incoming = snapshot.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        sellerId: data.sellerId ?? sellerId,
+        kind: data.kind,
+        name: data.name,
+        discountPct: data.discountPct,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        condition: data.condition,
+        itemIds: data.itemIds ?? [],
+        createdAt: data.createdAt ?? Date.now(),
+      } as SellerOffer;
+    });
 
-  const { data, error } = await queryWithTimeout(query, 5000);
-  if (error) return getOffers().filter((o) => !sellerId || o.sellerId === sellerId);
-  const incoming = (data ?? []).map(fromRow);
-  upsertCache(incoming, sellerId);
-  return incoming;
+    upsertCache(incoming, sellerId);
+    return incoming;
+  } catch (error) {
+    console.error("Failed to load offers:", error);
+    return getOffers().filter((o) => !sellerId || o.sellerId === sellerId);
+  }
 }
 
 export function getActiveOffers(now = Date.now()): SellerOffer[] {
@@ -163,35 +147,44 @@ export function getActiveOfferForSeller(sellerId?: string | null, now = Date.now
 }
 
 export async function addOffer(input: Omit<SellerOffer, "id" | "createdAt">): Promise<SellerOffer> {
-  const { data, error } = await db
-    .from("seller_offers")
-    .insert(toDbRow({ ...input, id: "", createdAt: Date.now() }))
-    .select("id, seller_id, kind, name, discount_pct, start_date, end_date, condition, item_ids, created_at")
-    .single();
-  if (error) throw new Error(error.message);
-  const newOffer = fromRow(data);
+  const session = getSellerSession();
+  if (!session?.id) throw new Error("No active seller session");
+
+  const db = getFirestore();
+  const offersRef = collection(db, "sellers", session.id, "offers");
+  const newDoc = doc(offersRef);
+
+  const newOffer: SellerOffer = {
+    ...input,
+    id: newDoc.id,
+    sellerId: session.id,
+    createdAt: Date.now(),
+  };
+
+  await setDoc(newDoc, newOffer);
   write([newOffer, ...read().filter((o) => o.id !== newOffer.id)]);
   return newOffer;
 }
 
 export async function updateOffer(id: string, patch: Partial<Omit<SellerOffer, "id" | "createdAt">>) {
-  const payload: Record<string, unknown> = {};
-  if (patch.sellerId !== undefined) payload.seller_id = patch.sellerId;
-  if (patch.kind !== undefined) payload.kind = patch.kind;
-  if (patch.name !== undefined) payload.name = patch.name;
-  if (patch.discountPct !== undefined) payload.discount_pct = patch.discountPct;
-  if (patch.startDate !== undefined) payload.start_date = patch.startDate || null;
-  if (patch.endDate !== undefined) payload.end_date = patch.endDate || null;
-  if (patch.condition !== undefined) payload.condition = patch.condition;
-  if (patch.itemIds !== undefined) payload.item_ids = patch.itemIds;
-  const { error } = await db.from("seller_offers").update(payload).eq("id", id);
-  if (error) throw new Error(error.message);
+  const session = getSellerSession();
+  if (!session?.id) throw new Error("No active seller session");
+
+  const db = getFirestore();
+  const docRef = doc(db, "sellers", session.id, "offers", id);
+  
+  await updateDoc(docRef, patch as any);
   write(read().map((o) => (o.id === id ? { ...o, ...patch } : o)));
 }
 
 export async function removeOffer(id: string) {
-  const { error } = await db.from("seller_offers").delete().eq("id", id);
-  if (error) throw new Error(error.message);
+  const session = getSellerSession();
+  if (!session?.id) throw new Error("No active seller session");
+
+  const db = getFirestore();
+  const docRef = doc(db, "sellers", session.id, "offers", id);
+  
+  await deleteDoc(docRef);
   write(read().filter((o) => o.id !== id));
 }
 
@@ -202,18 +195,17 @@ export function subscribeOffers(cb: () => void): () => void {
     if (e.key === STORAGE_KEY) cb();
   };
 
-  let channel: any = null;
-  try {
-    if (typeof db.channel === "function") {
-      channel = db
-        .channel("seller-offers-live")
-        .on("postgres_changes", { event: "*", schema: "public", table: "seller_offers" }, () => {
-          loadOffersFromBackend().then(cb).catch(() => cb());
-        })
-        .subscribe();
-    }
-  } catch (e) {
-    console.warn("Realtime offers init failed:", e);
+  const session = getSellerSession();
+  if (session?.id && !realtimeUnsub) {
+    const db = getFirestore();
+    realtimeUnsub = onSnapshot(collection(db, "sellers", session.id, "offers"), (snapshot) => {
+      const items = snapshot.docs.map((docSnap) => ({
+        ...docSnap.data(),
+        id: docSnap.id,
+      })) as SellerOffer[];
+      upsertCache(items, session.id);
+      cb();
+    });
   }
 
   window.addEventListener(EVENT_NAME, onLocal as EventListener);
@@ -221,8 +213,9 @@ export function subscribeOffers(cb: () => void): () => void {
   return () => {
     window.removeEventListener(EVENT_NAME, onLocal as EventListener);
     window.removeEventListener("storage", onStorage);
-    if (channel && typeof db.removeChannel === "function") {
-      db.removeChannel(channel);
+    if (realtimeUnsub) {
+      realtimeUnsub();
+      realtimeUnsub = null;
     }
   };
 }
