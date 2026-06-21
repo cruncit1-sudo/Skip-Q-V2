@@ -71,8 +71,8 @@ const SellerSettings = () => {
       ["canteenName", "Canteen Name"],
       ["slogan", "Slogan"],
       ["ownerPhone", "Owner Phone Number"],
-      ["accountNumber", "Account Number"],
-      ["ifsc", "IFSC Code"],
+      // ["accountNumber", "Account Number"],
+      // ["ifsc", "IFSC Code"],
       ["upiId", "UPI ID"],
     ];
     for (const [k, label] of required) {
@@ -212,7 +212,7 @@ const SellerSettings = () => {
 
             <section className="rounded-3xl border border-border bg-gradient-card p-5 shadow-card">
               <SectionTitle icon="payments" title="Payment Details" />
-              <SettingsInput
+              {/* <SettingsInput
                 label="Account Number"
                 placeholder="Enter account number"
                 inputMode="numeric"
@@ -224,7 +224,7 @@ const SellerSettings = () => {
                 placeholder="Enter IFSC code"
                 value={draft.ifsc}
                 onChange={(v) => updateDraft("ifsc", v)}
-              />
+              /> */}
               <SettingsInput
                 label="UPI ID"
                 placeholder="name@bank"
