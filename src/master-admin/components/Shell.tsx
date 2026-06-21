@@ -10,7 +10,7 @@ const NAV = [
   { to: "/master-admin/overview", label: "Overview", icon: "home" },
   { to: "/master-admin/sellers", label: "Sellers", icon: "store" },
   { to: "/master-admin/sellers/new", label: "Create Seller", icon: "add_circle" },
-  // { to: "/master-admin/users", label: "User Analytics", icon: "group" },
+  { to: "/master-admin/users", label: "User Analytics", icon: "group" },
   { to: "/master-admin/sales", label: "Sales Report", icon: "bar_chart" },
   { to: "/master-admin/behaviour", label: "Behaviour Insights", icon: "visibility" },
   { to: "/master-admin/products", label: "Product Performance", icon: "inventory_2" },
